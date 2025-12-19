@@ -228,7 +228,6 @@ score_linear = 0.4*0.933 + 0.3*1.33 + 0.1*0.20 + 0.2*1.0
 ```
 Precision@3: 18.8%
 ```
-
 **Interpretación:** De cada 3 productos recomendados, 0.56 están correctos (56% de 1).
 
 ---
@@ -293,6 +292,7 @@ Output: 0.987 ✅ PROBABILIDAD ALTA DE COMPRA
 
 ```
 Precision@3: 33.8% (Nov 9)
+
 Precision@3: 19.7% (Nov 30)
 ```
 
