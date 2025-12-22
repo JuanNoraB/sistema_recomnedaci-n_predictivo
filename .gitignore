@@ -1,3 +1,10 @@
 /Data/*.*
 /src/keras/*.csv
 /src/keras/*.xlsx
+/src/Resultados/
+/src/Resultados/*.*
+/src/Resultados/*.csv
+/src/Resultados/*.xlsx
+src/keras/.~lock.features_with_subcat_names.xlsx#
+src/keras/.~lock.predictions_fnn_final.csv#
+
