@@ -138,25 +138,21 @@ def compute_fnn_features(fecha_corte_str):
     print()
     df_features = pd.concat(results, ignore_index=True)
     
-    print(f"\n📊 Dataset completo (antes de filtrar):")
+    print(f"\n📊 Dataset completo para predicción:")
     print(f"   Total: {len(df_features)} registros")
     print(f"   Familias: {df_features['CODIGO_FAMILIA'].nunique()}")
     
-    # Filtrar solo registros con ciclos detectados (cortos o largos)
-    df_antes = len(df_features)
-    df_features = df_features[df_features['Ciclos_tipo_ciclo'] != 'no_ciclico'].copy()
-    
-    print(f"\n🎯 Dataset filtrado (solo cíclicos: cortos + largos):")
-    print(f"   Total: {len(df_features)} registros (-{df_antes - len(df_features)} no_cíclicos)")
-    print(f"   Familias: {df_features['CODIGO_FAMILIA'].nunique()}")
-    
+    # Mostrar distribución de ciclos (pero NO filtrar - el modelo decide)
     tipo_dist = df_features['Ciclos_tipo_ciclo'].value_counts()
-    print(f"\n   Distribución:")
-    for tipo in ['corto', 'largo']:
+    print(f"\n   Distribución de ciclos:")
+    for tipo in ['corto', 'largo', 'no_ciclico']:
         if tipo in tipo_dist.index:
             count = tipo_dist[tipo]
             pct = count/len(df_features)*100
-            print(f"      {tipo:6s}: {count:5d} ({pct:4.1f}%)")
+            print(f"      {tipo:11s}: {count:5d} ({pct:4.1f}%)")
+    
+    print(f"\n   💡 El modelo predecirá para TODAS las subcategorías")
+    print(f"      (no_cíclicos probablemente tendrán scores bajos)")
     
     return df_features
 

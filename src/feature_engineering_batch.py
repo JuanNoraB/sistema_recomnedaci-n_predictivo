@@ -40,21 +40,25 @@ def load_historical_dataset(path: Path) -> pd.DataFrame:
 
     df = pd.read_csv(
         path,
-        dtype=RAW_DTYPES,  #indicar el tipo de dato por columna
-        parse_dates=PARSE_DATES, #indicar las columnas que son fechas
-        dayfirst=True,
-        infer_datetime_format=True, #intenta adividar el formato de fecha y optimizar el parseeo
-        encoding='latin-1'
-    )
+        encoding='utf-8',
+        sep=';')
+        
 
+    # Convertir fechas
     df["DIM_PERIODO"] = pd.to_datetime(
         df["DIM_PERIODO"],
-        format="%d-%b-%y", # ejemplo: 24-Nov-25, para 25-11-2025 SERIA "format = %d-%m-%Y"
+        format="%d-%b-%y", # ejemplo: 24-Nov-25
         errors="coerce",
     )
 
+    # Convertir columnas numéricas
     for col in NUMERIC_COLUMNS:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+    
+    # Convertir columnas int con coercion (rellenar NaN antes de convertir)
+    for col in RAW_DTYPES.keys():
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
 
     df = df.dropna(subset=["DIM_PERIODO", "CODIGO_FAMILIA", "COD_SUBCATEGORIA"])
     df["CODIGO_FAMILIA"] = df["CODIGO_FAMILIA"].astype(int)
@@ -67,91 +71,252 @@ def load_historical_dataset(path: Path) -> pd.DataFrame:
 
     return df
 
-def penalize_outliers(data, std_threshold):
-    arr = np.asarray(data, dtype=float)
-    if arr.size < 2: #quitar esta mierda que esta demas 
-        return arr.tolist(), [2,0,0] # Devuelve lista y fuerza de castigo
+def calcular_cv_normalizado(gaps_dias):
+    """
+    Normaliza gaps dividiendo por el mínimo y calcula el Coeficiente de Variación (CV).
     
-    mean, std = np.mean(arr), np.std(arr)
-    if std == 0:
-        return arr.tolist(), [2,0,0]
+    Returns:
+        cv (float): Coeficiente de variación normalizado
+        gaps_norm (array): Gaps normalizados
+    """
+    arr = np.asarray(gaps_dias, dtype=float)
+    
+    if arr.size < 2:
+        return 999.0, arr  # CV infinito = muy irregular
+    
+    # Normalización: dividir por el mínimo
+    min_gap = np.min(arr)
+    if min_gap == 0:
+        return 999.0, arr
+    
+    gaps_norm = arr / min_gap
+    
+    # Calcular CV normalizado
+    mean_norm = np.mean(gaps_norm)
+    std_norm = np.std(gaps_norm)
+    
+    cv = std_norm / mean_norm if mean_norm > 0 else 999.0
+    
+    return cv, gaps_norm
 
-    # Calculamos la "fuerza" como la proporción de la std sobre la media
-    # Esto nos da una idea de qué tan grande es la dispersión
-    fuerza_castigo = std / mean if mean > 0 else 1.0
+def calcular_ciclos_cortos(
+    df_ventas,
+    familia_id,
+    subcat,
+    meses_historico=12,
+    periodo_dias=7,
+    min_compras=3,
+    max_compras_recientes=10,
+    cv_threshold=0.5,
+    today=pd.Timestamp.today()
+):
+    """
+    Detecta ciclos cortos/medios (hasta ~6 meses).
+    Usa ventana de 12 meses y bloques de 7 días.
+    """
+    today = today.normalize()
+    fecha_inicio = today - pd.DateOffset(months=meses_historico)
     
-    upper_bound = mean + std_threshold * std
-    lower_bound = mean - std_threshold * std
-    penalized_arr = np.clip(arr, lower_bound, upper_bound)
+    df_sub = df_ventas[
+        (df_ventas["CODIGO_FAMILIA"] == familia_id) &
+        (df_ventas["COD_SUBCATEGORIA"] == subcat) &
+        (pd.to_datetime(df_ventas["DIM_PERIODO"]) >= fecha_inicio)
+    ].copy()
     
-    return penalized_arr.tolist(), [fuerza_castigo, mean, std]
+    if df_sub.empty:
+        return {"ciclo_dias": 0, "cv": 999, "tipo": "no_ciclico", "razon": "sin_datos"}
+    
+    # Calcular bloques
+    dias_desde_inicio = (df_sub["DIM_PERIODO"] - fecha_inicio).dt.days
+    df_sub["bloque"] = dias_desde_inicio // periodo_dias
+    
+    # Ordenar por fecha y tomar bloques únicos
+    df_sub = df_sub.sort_values("DIM_PERIODO", ascending=False)
+    bloques_con_compra = np.sort(df_sub["bloque"].unique())
+    
+    # Limitar a últimas N compras
+    if len(bloques_con_compra) > max_compras_recientes:
+        bloques_con_compra = bloques_con_compra[-max_compras_recientes:]
+    
+    # Verificar mínimo de compras
+    if len(bloques_con_compra) < min_compras:
+        return {"ciclo_dias": 0, "cv": 999, "tipo": "no_ciclico", "razon": "pocas_compras_corto"}
+    
+    # Calcular gaps de BLOQUES (para CV - suavizado)
+    gaps_bloques = np.diff(bloques_con_compra)
+    if len(gaps_bloques) == 0:
+        return {"ciclo_dias": 0, "cv": 999, "tipo": "no_ciclico", "razon": "sin_gaps"}
+    
+    gaps_dias_bloques = gaps_bloques * periodo_dias
+    
+    # Calcular CV normalizado usando gaps de bloques (suavizados)
+    cv, gaps_norm = calcular_cv_normalizado(gaps_dias_bloques)
+    
+    # Calcular gaps REALES (días exactos entre fechas de compra)
+    # Para esto, tomamos las fechas únicas ordenadas
+    fechas_unicas = df_sub.groupby('bloque')['DIM_PERIODO'].max().sort_values()
+    if len(bloques_con_compra) > max_compras_recientes:
+        fechas_unicas = fechas_unicas.iloc[-max_compras_recientes:]
+    
+    gaps_dias_reales = np.diff(fechas_unicas).astype('timedelta64[D]').astype(int)
+    gaps_dias_reales = gaps_dias_reales.tolist()
+    
+    # Decidir si es cíclico
+    if cv <= cv_threshold:
+        # Ciclo promedio basado en gaps REALES
+        ciclo_dias = float(np.mean(gaps_dias_reales))
+        
+        # Validar coherencia: cortos deben ser < 180 días (6 meses)
+        if ciclo_dias >= 180:
+            return {"ciclo_dias": 0, "cv": cv, "tipo": "no_ciclico", "razon": "ciclo_muy_largo_para_corto"}
+        
+        return {
+            "ciclo_dias": ciclo_dias,
+            "cv": cv,
+            "tipo": "corto",
+            "gaps_originales": gaps_dias_reales,  # Días REALES
+            "gaps_normalizados": gaps_norm.tolist()
+        }
+    else:
+        return {"ciclo_dias": 0, "cv": cv, "tipo": "no_ciclico", "razon": "cv_alto_corto"}
+
+
+def calcular_ciclos_largos(
+    df_ventas,
+    familia_id,
+    subcat,
+    meses_historico=36,
+    periodo_dias=30,
+    min_compras=4,
+    cv_threshold=0.7,
+    today=pd.Timestamp.today()
+):
+    """
+    Detecta ciclos largos (6 meses a 2 años).
+    Usa ventana de 36 meses y bloques de 30 días.
+    """
+    today = today.normalize()
+    fecha_inicio = today - pd.DateOffset(months=meses_historico)
+    
+    df_sub = df_ventas[
+        (df_ventas["CODIGO_FAMILIA"] == familia_id) &
+        (df_ventas["COD_SUBCATEGORIA"] == subcat) &
+        (pd.to_datetime(df_ventas["DIM_PERIODO"]) >= fecha_inicio)
+    ].copy()
+    
+    if df_sub.empty:
+        return {"ciclo_dias": 0, "cv": 999, "tipo": "no_ciclico", "razon": "sin_datos_largo"}
+    
+    # Calcular bloques
+    dias_desde_inicio = (df_sub["DIM_PERIODO"] - fecha_inicio).dt.days
+    df_sub["bloque"] = dias_desde_inicio // periodo_dias
+    
+    # Bloques únicos ordenados
+    bloques_con_compra = np.sort(df_sub["bloque"].unique())
+    
+    # Verificar mínimo de compras
+    if len(bloques_con_compra) < min_compras:
+        return {"ciclo_dias": 0, "cv": 999, "tipo": "no_ciclico", "razon": "pocas_compras_largo"}
+    
+    # Calcular gaps de BLOQUES (para CV - suavizado)
+    gaps_bloques = np.diff(bloques_con_compra)
+    if len(gaps_bloques) == 0:
+        return {"ciclo_dias": 0, "cv": 999, "tipo": "no_ciclico", "razon": "sin_gaps_largo"}
+    
+    gaps_dias_bloques = gaps_bloques * periodo_dias
+    
+    # Calcular CV normalizado usando gaps de bloques (suavizados)
+    cv, gaps_norm = calcular_cv_normalizado(gaps_dias_bloques)
+    
+    # Calcular gaps REALES (días exactos entre fechas de compra)
+    fechas_unicas = df_sub.groupby('bloque')['DIM_PERIODO'].max().sort_values()
+    gaps_dias_reales = np.diff(fechas_unicas).astype('timedelta64[D]').astype(int)
+    gaps_dias_reales = gaps_dias_reales.tolist()
+    
+    # Decidir si es cíclico
+    if cv <= cv_threshold:
+        # Ciclo promedio basado en gaps REALES
+        ciclo_dias = float(np.mean(gaps_dias_reales))
+        
+        # Validar coherencia: largos deben ser >= 180 días (6 meses)
+        if ciclo_dias < 180:
+            return {"ciclo_dias": 0, "cv": cv, "tipo": "no_ciclico", "razon": "ciclo_muy_corto_para_largo"}
+        
+        return {
+            "ciclo_dias": ciclo_dias,
+            "cv": cv,
+            "tipo": "largo",
+            "gaps_originales": gaps_dias_reales,  # Días REALES
+            "gaps_normalizados": gaps_norm.tolist()
+        }
+    else:
+        return {"ciclo_dias": 0, "cv": cv, "tipo": "no_ciclico", "razon": "cv_alto_largo"}
+
 
 def calcular_ciclos_por_bloques(
     df_ventas,
     familia_id,
-    meses_historico=14,
-    periodo_dias=7,
-    min_bloques_compra=3,
-    max_compras_recientes=10, # Límite de compras a usar
-    std_threshold=0.1, # para el suavizado de los ciclossss 
-    today=pd.Timestamp.today(),
+    today=pd.Timestamp.today()
 ):
-    today = today.normalize() # 0s a la hora actual
-    fecha_inicio = today - pd.DateOffset(months=meses_historico)
-
-    df_fam = df_ventas[
-        (df_ventas["CODIGO_FAMILIA"] == familia_id) &
-        (pd.to_datetime(df_ventas["DIM_PERIODO"]) >= fecha_inicio)
-    ].copy()
-
+    """
+    Orquestador: intenta primero ciclos cortos, luego largos.
+    Retorna DataFrame con resultados para todas las subcategorías.
+    """
+    today = today.normalize()
+    
+    # Obtener subcategorías de la familia
+    df_fam = df_ventas[df_ventas["CODIGO_FAMILIA"] == familia_id].copy()
     if df_fam.empty:
         return pd.DataFrame()
-
-    dias_desde_inicio = (df_fam["DIM_PERIODO"] - fecha_inicio).dt.days #dias que pasaron desde la fecha del inicio 
-    df_fam["bloque"] = dias_desde_inicio // periodo_dias
-
+    
+    subcategorias = df_fam["COD_SUBCATEGORIA"].unique()
     resultados = []
-
-    for subcat, df_sub in df_fam.groupby("COD_SUBCATEGORIA"):
-        # Ordenamos por fecha para tomar las más recientes
-        df_sub = df_sub.sort_values("DIM_PERIODO", ascending=False)
-        bloques_con_compra = np.sort(df_sub["bloque"].unique())
-
-        # Usamos solo las N compras más recientes
-        if len(bloques_con_compra) > max_compras_recientes:
-            bloques_con_compra = bloques_con_compra[-max_compras_recientes:]
-
-        # Si no cumple el mínimo, retornamos valores por defecto
-        if len(bloques_con_compra) < min_bloques_compra:
-            resultados.append({
-                "CODIGO_FAMILIA": familia_id, "COD_SUBCATEGORIA": subcat,
-                "ciclo_dias": 0, "fuerza_castigo": [2,0,0],
-                "gaps_originales_dias": [], "gaps_suavizados_dias": []
-            })
-            continue
-
-        gaps_bloques = np.diff(bloques_con_compra)
-        if len(gaps_bloques) == 0: # solo en el caso de que numero de compras se setee en 1 pero esto nlv se va hacer
-            continue
-            
-        gaps_dias = gaps_bloques * periodo_dias
+    
+    for subcat in subcategorias:
+        # FASE 1: Intentar ciclos cortos
+        resultado_corto = calcular_ciclos_cortos(
+            df_ventas=df_ventas,
+            familia_id=familia_id,
+            subcat=subcat,
+            today=today
+        )
         
-        gaps_suavizados, fuerza_castigo = penalize_outliers(gaps_dias, std_threshold=std_threshold)
-        ciclo_dias = np.mean(gaps_suavizados)
-        ciclo_dias_sin_suavisado = np.mean(gaps_dias)
-
-        resultados.append({
-            "CODIGO_FAMILIA": familia_id, "COD_SUBCATEGORIA": subcat,
-            "ciclo_dias": ciclo_dias, "ciclo_dias_sin_suavisado": ciclo_dias_sin_suavisado, "fuerza_castigo": fuerza_castigo,
-            "gaps_originales_dias": gaps_dias.tolist(), "gaps_suavizados_dias": gaps_suavizados
-        })
-
+        if resultado_corto["ciclo_dias"] > 0:
+            # Encontró ciclo corto
+            resultados.append({
+                "CODIGO_FAMILIA": familia_id,
+                "COD_SUBCATEGORIA": subcat,
+                "ciclo_dias": resultado_corto["ciclo_dias"],
+                "cv": resultado_corto["cv"],
+                "tipo_ciclo": resultado_corto["tipo"],
+                "gaps_originales_dias": resultado_corto.get("gaps_originales", []),
+                "gaps_normalizados": resultado_corto.get("gaps_normalizados", [])
+            })
+        else:
+            # FASE 2: Intentar ciclos largos
+            resultado_largo = calcular_ciclos_largos(
+                df_ventas=df_ventas,
+                familia_id=familia_id,
+                subcat=subcat,
+                today=today
+            )
+            
+            resultados.append({
+                "CODIGO_FAMILIA": familia_id,
+                "COD_SUBCATEGORIA": subcat,
+                "ciclo_dias": resultado_largo["ciclo_dias"],
+                "cv": resultado_largo["cv"],
+                "tipo_ciclo": resultado_largo["tipo"],
+                "gaps_originales_dias": resultado_largo.get("gaps_originales", []),
+                "gaps_normalizados": resultado_largo.get("gaps_normalizados", [])
+            })
+    
     df_resultado = pd.DataFrame(resultados)
     
-    # Ordenar para que los que no tienen ciclo queden al final
+    # Ordenar: cíclicos primero, por CV ascendente
     if not df_resultado.empty:
-        df_resultado = df_resultado.sort_values("fuerza_castigo", ascending=True).reset_index(drop=True)
-
+        df_resultado = df_resultado.sort_values(["ciclo_dias", "cv"], ascending=[False, True]).reset_index(drop=True)
+    
     return df_resultado
     
 
@@ -204,81 +369,82 @@ def compute_recency_features(subcat_agg: pd.DataFrame,
     return subcat_agg[["COD_SUBCATEGORIA", "recencia_hl","castigo_recencia","l_compra_sobre_ciclo","dias_desde_ultima_compra","recencia"]]
 
 
-def compute_frequency_features(df_family: pd.DataFrame,ciclos_estacionales: pd.DataFrame, fecha_corte: pd.Timestamp,periodo_dias: int = 7) -> pd.DataFrame:
-    ventana_inicio = fecha_corte - pd.Timedelta(days=FREQUENCY_WINDOW_DAYS)
-    recientes = df_family[df_family["DIM_PERIODO"] >= ventana_inicio].copy()
+def compute_frequency_features(df_family: pd.DataFrame, ciclos_estacionales: pd.DataFrame, fecha_corte: pd.Timestamp) -> pd.DataFrame:
+    """
+    Calcula features de frecuencia con ventanas adaptativas según tipo de ciclo.
+    - Ciclos cortos: ventana de 180 días (6 meses)
+    - Ciclos largos: ventana de max(360, ciclo*3) días
+    """
+    resultados = []
 
-    recientes['mes']= recientes['DIM_PERIODO'].dt.month
+    
+    for _, row in ciclos_estacionales.iterrows():
+        subcat = row["COD_SUBCATEGORIA"]
+        ciclo_dias = row["ciclo_dias"]
+        tipo_ciclo = row.get("tipo_ciclo", "no_ciclico")
+        
+        # Determinar ventana según tipo de ciclo
+        if tipo_ciclo == "largo":
+            # Ciclos largos: mínimo 1 año o 3 ciclos
+            ventana_dias = max(360, int(ciclo_dias * 3))
+        else:
+            # Ciclos cortos o no cíclicos: 180 días (6 meses)
+            ventana_dias = FREQUENCY_WINDOW_DAYS
+        
+        ventana_inicio = fecha_corte - pd.Timedelta(days=ventana_dias)
+        recientes = df_family[
+            (df_family["COD_SUBCATEGORIA"] == subcat) &
+            (df_family["DIM_PERIODO"] >= ventana_inicio)
+        ].copy()
+        
+        compras_reales = recientes["DIM_FACTURA"].count()
+        
+        # Calcular compras esperadas
+        if ciclo_dias > 0:
+            avg_compras = (ventana_dias / ciclo_dias) * 1.2
+        else:
+            avg_compras = 0.0
 
-    #dias_desde_inicio = (recientes["DIM_PERIODO"] - ventana_inicio).dt.days
-    #recientes["bloque"] = dias_desde_inicio // periodo_dias
-
-    freq = (
-        recientes.groupby(["COD_SUBCATEGORIA"])
-        .agg(
-            compras=("DIM_FACTURA", "count")
-        )
-        .reset_index()
-    )
-    # 10 
-    if freq.empty:
-        return pd.DataFrame({"COD_SUBCATEGORIA": df_family["COD_SUBCATEGORIA"].unique(), "freq_score": 0.1})
-
-
-    freq_ciclo = freq.merge(ciclos_estacionales[["COD_SUBCATEGORIA", "ciclo_dias"]], on="COD_SUBCATEGORIA", how="left")
-    # 180 / 30 = 6  compras cada 30 dias uno 
-    # 1) avg_compras: 0 cuando ciclo_dias == 0, si no, 90 / ciclo_dias (o lo que sea FREQUENCY_WINDOW_DAYS)
-    #15 7 dias   6  3 meses      
-    freq_ciclo["avg_compras"] = 0.0
-    mask_ciclo_pos = freq_ciclo["ciclo_dias"] > 0
-
-    freq_ciclo.loc[mask_ciclo_pos, "avg_compras"] = np.round(
-        (FREQUENCY_WINDOW_DAYS / freq_ciclo.loc[mask_ciclo_pos, "ciclo_dias"]) * 1.2
-    )
-
-    # 2) freq_score: 0 cuando avg_compras == 0,
-    freq_ciclo["freq_score"] = 0.0
-    mask_avg_pos = freq_ciclo["avg_compras"] > 0
-
-    # --- NUEVA CURVA DE FRECUENCIA ---
-
-    alpha = 0.25     # curva para r < 1
-    base_min = 0.4   # valor en r = 1
-    base_max = 1.0   # valor en r = 0
-    r_max = 1.6      # en r = 1.6 el score cae a 0
-
-    # ratio compras / promedio
-    ratio = (
-        freq_ciclo.loc[mask_avg_pos, "compras"] /
-        freq_ciclo.loc[mask_avg_pos, "avg_compras"]
-    ).to_numpy()
-
-    score = np.zeros_like(ratio)
-    freq_ciclo["ratio"] = 10
-    freq_ciclo.loc[mask_avg_pos, "ratio"] = ratio.astype(float)
-    # tramo r <= 1
-    mask_low = ratio <= 1
-    raw_low = (1 - ratio[mask_low]) ** alpha          # 1 en r=0, 0 en r=1
-    score[mask_low] = base_min + (base_max - base_min) * raw_low
-    # => r=0 -> 1 ; r=1 -> 0.4
-
-    # tramo 1 < r <= r_max : cola lineal de 0.4 a 0
-    mask_high = ratio > 1
-    exceso = np.minimum(ratio[mask_high], r_max) - 1   # 0 en r=1, r_max-1 en r_max
-    score[mask_high] = base_min * np.maximum(
-        0,
-        1 - exceso / (r_max - 1)
-    )
-    # ratio > r_max → 0
-
-    # guardamos en freq_score SOLO para los que tienen avg_compras>0
-    freq_ciclo.loc[mask_avg_pos, "freq_score"] = score
-
-    return freq_ciclo[["COD_SUBCATEGORIA", "freq_score","avg_compras","compras","ratio"]]
+        # Calcular score según ratio
+        if avg_compras > 0:
+            ratio = compras_reales / avg_compras
+            
+            # Curva de frecuencia
+            alpha = 0.25
+            base_min = 0.4
+            base_max = 1.0
+            r_max = 1.6
+            
+            if ratio <= 1:
+                raw_low = (1 - ratio) ** alpha
+                freq_score = base_min + (base_max - base_min) * raw_low
+            elif ratio <= r_max:
+                exceso = ratio - 1
+                freq_score = base_min * max(0, 1 - exceso / (r_max - 1))
+            else:
+                freq_score = 0.0
+        else:
+            ratio = 10.0
+            freq_score = 0.0
+        
+        resultados.append({
+            "COD_SUBCATEGORIA": subcat,
+            "freq_score": freq_score,
+            "avg_compras": avg_compras,
+            "compras": compras_reales,
+            "ratio": ratio,
+            "ventana_dias": ventana_dias
+        })
+    
+    return pd.DataFrame(resultados)
 
 
-def compute_sow_features(df_family: pd.DataFrame, fecha_corte: pd.Timestamp) -> pd.DataFrame:
-
+def compute_sow_features(df_family: pd.DataFrame, ciclos_estacionales: pd.DataFrame, fecha_corte: pd.Timestamp) -> pd.DataFrame:
+    """
+    Calcula Share of Wallet con pesos adaptativos según tipo de ciclo.
+    - Ciclos cortos: peso_12m=7, peso_24m=3 (sesgo reciente)
+    - Ciclos largos: peso_12m=1, peso_24m=1 (sin sesgo)
+    """
     ventana_12m_inicio = fecha_corte - pd.DateOffset(months=SOW_MONTHS_12)
     ventana_24m_inicio = fecha_corte - pd.DateOffset(months=SOW_MONTHS_24)
 
@@ -304,10 +470,26 @@ def compute_sow_features(df_family: pd.DataFrame, fecha_corte: pd.Timestamp) -> 
         .agg(transacciones_netas=("DIM_FACTURA", "count"))
         .reset_index()
     )
-
-    # Pesos: más reciente (12m) *7, más antiguo (24–12) *3
-    sow_agg_12m["transacciones_netas"] = sow_agg_12m["transacciones_netas"] * 7
-    sow_agg_24m["transacciones_netas"] = sow_agg_24m["transacciones_netas"] * 3
+    
+    # Crear mapa de tipo de ciclo
+    tipo_ciclo_map = ciclos_estacionales.set_index("COD_SUBCATEGORIA")["tipo_ciclo"].to_dict()
+    
+    # Aplicar pesos según tipo de ciclo
+    def aplicar_pesos(row, periodo):
+        subcat = row["COD_SUBCATEGORIA"]
+        tipo = tipo_ciclo_map.get(subcat, "no_ciclico")
+        
+        if tipo == "largo":
+            # Pesos iguales para ciclos largos
+            peso = 1
+        else:
+            # Sesgo reciente para ciclos cortos
+            peso = 7 if periodo == "12m" else 3
+        
+        return row["transacciones_netas"] * peso
+    
+    sow_agg_12m["transacciones_netas"] = sow_agg_12m.apply(lambda r: aplicar_pesos(r, "12m"), axis=1)
+    sow_agg_24m["transacciones_netas"] = sow_agg_24m.apply(lambda r: aplicar_pesos(r, "24m"), axis=1)
 
     # Unión vertical (no merge)
     sow_agg = pd.concat([sow_agg_12m, sow_agg_24m], ignore_index=True)
@@ -455,85 +637,123 @@ def _detectar_estacionalidad(
     return df_agg[["COD_SUBCATEGORIA", "puntaje","umbral","serie","serie_binaria","serie_limpia","indices_picos","CV","mean_indices_picos","std_indices_picos"]]
 
 
-def compute_seasonality_features(df_family: pd.DataFrame, fecha_corte: pd.Timestamp, months: int =3) -> pd.DataFrame:
-    # 1) Ventanas
-    inicio_actual = fecha_corte - pd.DateOffset(months=months)
-    mask_actual = (df_family["DIM_PERIODO"] > inicio_actual) & (df_family["DIM_PERIODO"] <= fecha_corte)
+def compute_seasonality_features(df_family: pd.DataFrame, ciclos_estacionales: pd.DataFrame, fecha_corte: pd.Timestamp) -> pd.DataFrame:
+    """
+    Calcula features de estacionalidad con ventanas adaptativas.
+    - Ciclos cortos: 3 meses actual vs 3 meses hace 1 año
+    - Ciclos largos: 6 meses actual vs promedio de (hace 1, 2 y 3 años)
+    """
+    tipo_ciclo_map = ciclos_estacionales.set_index("COD_SUBCATEGORIA")["tipo_ciclo"].to_dict()
+    resultados = []
 
-    inicio_pasado = inicio_actual - pd.DateOffset(months=12)
-    fin_pasado = fecha_corte - pd.DateOffset(months=12)
-    mask_pasado = (df_family["DIM_PERIODO"] > inicio_pasado) & (df_family["DIM_PERIODO"] <= fin_pasado)
-
-    # 2) Compras por trimestre
-    actuales = (
-        df_family[mask_actual]
-        .groupby("COD_SUBCATEGORIA")["DIM_FACTURA"]
-        .nunique()
-        .rename("compras_trim_actual")
-    )
-
-    pasados = (
-        df_family[mask_pasado]
-        .groupby("COD_SUBCATEGORIA")["DIM_FACTURA"]
-        .nunique()
-        .rename("compras_trim_pasado")
-    )
-
-    # 3) Base
-    base = pd.DataFrame({"COD_SUBCATEGORIA": df_family["COD_SUBCATEGORIA"].unique()})
-    base = base.merge(actuales, on="COD_SUBCATEGORIA", how="left")
-    base = base.merge(pasados, on="COD_SUBCATEGORIA", how="left")
-    base[["compras_trim_actual", "compras_trim_pasado"]] = base[
-        ["compras_trim_actual", "compras_trim_pasado"]
-    ].fillna(0)
-
-
-    A = base["compras_trim_actual"].astype(float)
-    P = base["compras_trim_pasado"].astype(float)
-
-    # Caso general P > 0
-    need_raw = pd.Series(0.0, index=base.index)
-
-    mask_P_pos = P > 0
-    need_raw.loc[mask_P_pos] = (P[mask_P_pos] - A[mask_P_pos]) / P[mask_P_pos]
-
-    # Recorte a [0,1]
-    need = need_raw.clip(lower=0.0, upper=1.0)
-
-    # Caso P == 0
-    mask_P_zero = (P == 0)
-
-    # Subcasos:
-    # - P=0, A=0  -> no hay patrón ni compra: 0
-    # - P=0, A>0  -> compró este año, sin patrón histórico del trimestre: también 0 (no backlog)
-    #   SE PORDIA  poner algo mínimo tipo 0.1
-    need.loc[mask_P_zero] = 0.0
-
-    base["season_ratio"] = need
-
-    #estacioonalidad
-    estacionalidad = _detectar_estacionalidad(df_ventas=df_family.copy(),historico_ventas=12,today=fecha_corte,min_picos=2)
-
-
-    base = base.merge(estacionalidad, on="COD_SUBCATEGORIA", how="left")
-
-    factor = 0.5 + 0.5 * base["puntaje"]
-    base["season_ratio"] = base["season_ratio"] * factor
-
-    #["COD_SUBCATEGORIA", "puntaje","umbral","serie","serie_binaria","serie_limpia","indices_picos","CV"]
     
-    return base[["COD_SUBCATEGORIA", "season_ratio","compras_trim_actual", "compras_trim_pasado","puntaje","umbral","serie","serie_binaria","serie_limpia","indices_picos","CV","mean_indices_picos","std_indices_picos"]]
+    for subcat in df_family["COD_SUBCATEGORIA"].unique():
+        tipo = tipo_ciclo_map.get(subcat, "no_ciclico")
+        
+        if tipo == "largo":
+            # Ciclos largos: 6 meses actual vs promedio de 3 años
+            months_actual = 6
+            
+            # Ventana actual
+            inicio_actual = fecha_corte - pd.DateOffset(months=months_actual)
+            mask_actual = (
+                (df_family["COD_SUBCATEGORIA"] == subcat) &
+                (df_family["DIM_PERIODO"] > inicio_actual) & 
+                (df_family["DIM_PERIODO"] <= fecha_corte)
+            )
+            
+            # Ventanas pasadas: hace 1, 2 y 3 años
+            compras_pasadas = []
+            for years_ago in [1, 2, 3]:
+                inicio = fecha_corte - pd.DateOffset(months=months_actual + 12*years_ago)
+                fin = fecha_corte - pd.DateOffset(months=12*years_ago)
+                mask = (
+                    (df_family["COD_SUBCATEGORIA"] == subcat) &
+                    (df_family["DIM_PERIODO"] > inicio) & 
+                    (df_family["DIM_PERIODO"] <= fin)
+                )
+                compras = df_family[mask]["DIM_FACTURA"].nunique()
+                compras_pasadas.append(compras)
+            
+            compras_actual = df_family[mask_actual]["DIM_FACTURA"].nunique()
+            compras_pasado_promedio = np.mean(compras_pasadas)
+            
+        else:
+            # Ciclos cortos: 3 meses actual vs 3 meses hace 1 año
+            months_actual = 3
+            
+            inicio_actual = fecha_corte - pd.DateOffset(months=months_actual)
+            mask_actual = (
+                (df_family["COD_SUBCATEGORIA"] == subcat) &
+                (df_family["DIM_PERIODO"] > inicio_actual) & 
+                (df_family["DIM_PERIODO"] <= fecha_corte)
+            )
+            
+            inicio_pasado = inicio_actual - pd.DateOffset(months=12)
+            fin_pasado = fecha_corte - pd.DateOffset(months=12)
+            mask_pasado = (
+                (df_family["COD_SUBCATEGORIA"] == subcat) &
+                (df_family["DIM_PERIODO"] > inicio_pasado) & 
+                (df_family["DIM_PERIODO"] <= fin_pasado)
+            )
+            
+            compras_actual = df_family[mask_actual]["DIM_FACTURA"].nunique()
+            compras_pasado_promedio = df_family[mask_pasado]["DIM_FACTURA"].nunique()
+        
+        # Calcular need
+        if compras_pasado_promedio > 0:
+            need = (compras_pasado_promedio - compras_actual) / compras_pasado_promedio
+            need = max(0.0, min(1.0, need))
+        else:
+            need = 0.0
+        
+        resultados.append({
+            "COD_SUBCATEGORIA": subcat,
+            "season_ratio_base": need,
+            "compras_trim_actual": compras_actual,
+            "compras_trim_pasado": compras_pasado_promedio
+        })
+    
+    base = pd.DataFrame(resultados)
+    
+    # Detección de estacionalidad (usa 12 meses)
+    estacionalidad = _detectar_estacionalidad(
+        df_ventas=df_family.copy(),
+        historico_ventas=12,
+        today=fecha_corte,
+        min_picos=2
+    )
+    
+    base = base.merge(estacionalidad, on="COD_SUBCATEGORIA", how="left")
+    
+    # Aplicar factor de estacionalidad
+    factor = 0.5 + 0.5 * base["puntaje"].fillna(0)
+    base["season_ratio"] = base["season_ratio_base"] * factor
+    
+    return base[["COD_SUBCATEGORIA", "season_ratio", "compras_trim_actual", "compras_trim_pasado", 
+                 "puntaje", "umbral", "serie", "serie_binaria", "serie_limpia", "indices_picos", 
+                 "CV", "mean_indices_picos", "std_indices_picos"]]
 
 
 def compute_features_for_family(
     df_family: pd.DataFrame,   # es el dataset de ventas filtrado por la familia sin group by de nada
-    family_code: int
+    family_code: int,
+    fecha_corte: pd.Timestamp = None
 ) -> pd.DataFrame:
-    df_family = df_family[df_family["DIM_PERIODO"] < CUTOFF_DATE].copy()
+    """
+    Calcula features para una familia.
+    
+    Args:
+        df_family: DataFrame con ventas de la familia
+        family_code: Código de la familia
+        fecha_corte: Fecha de corte para cálculo de features (default: CUTOFF_DATE global)
+    """
+    if fecha_corte is None:
+        fecha_corte = CUTOFF_DATE
+    
+    df_family = df_family[df_family["DIM_PERIODO"] < fecha_corte].copy()
     if df_family.empty:
         return pd.DataFrame()
-
-    fecha_corte = CUTOFF_DATE
 
     subcat_agg = (
         df_family.groupby("COD_SUBCATEGORIA")
@@ -555,37 +775,46 @@ def compute_features_for_family(
         return pd.DataFrame()
 
     subcat_agg = subcat_agg.sort_values("total_venta_neta", ascending=False).reset_index(drop=True)
-    #columnas para tracking compleot ciclos de castigo 
     
-    columnas_ciclos_estacionales = ["CODIGO_FAMILIA", "COD_SUBCATEGORIA", "ciclo_dias", "fuerza_castigo", "gaps_originales_dias", "gaps_suavizados_dias"]
+    # Calcular ciclos (ahora con sistema de 2 fases: cortos y largos)
     ciclos_estacionales = calcular_ciclos_por_bloques(
-        df_ventas=df_family, #es el raw dataset vetnas filtrado solo por la famialia
-        familia_id=family_code,  #coidigo de familia para debug mas que todo
-        meses_historico=12, #meses historicos para calcular los ciclos hacia a tras desde fecha de corte
-        periodo_dias =7,#aplanamos datos independientemente del numero de compras por este perido cuenta como uno
-        min_bloques_compra=3, #es el minimo de compras que tiene que tener para poder caclcular el ciclo
-        max_compras_recientes = 10, # es el maximo numero de compras spara calcular el ciclo si tiene mas se acota segun su periodo
-        today=fecha_corte)
-
-    columnas_recencia = ["COD_SUBCATEGORIA", "recencia_hl","castigo_recencia","l_compra_sobre_ciclo","dias_desde_ultima_compra","recencia"]
-    recency_features =  compute_recency_features(subcat_agg=subcat_agg, #mandado mi data agrupada ya 
-                                              ciclos_estacionales=ciclos_estacionales, 
-                                              fecha_corte=fecha_corte)
-
-    columnas_freq = ["COD_SUBCATEGORIA", "freq_score","avg_compras","compras","ratio"]
-    freq_features = compute_frequency_features(df_family=df_family,
-                                            fecha_corte=fecha_corte,
-                                            ciclos_estacionales=ciclos_estacionales,
-                                            periodo_dias=7) #este perido no esta haciendo nada
-    features_final = recency_features.merge(freq_features, on="COD_SUBCATEGORIA", how="left")
-
+        df_ventas=df_family,
+        familia_id=family_code,
+        today=fecha_corte
+    )
     
-    columnas_sow = ["COD_SUBCATEGORIA", "sow_24m","transacciones_netas"]
-    sow_features = compute_sow_features(df_family=df_family, fecha_corte=fecha_corte)
-    features_final = features_final.merge(sow_features, on="COD_SUBCATEGORIA", how="left")
+    if ciclos_estacionales.empty:
+        return pd.DataFrame()
 
-    columnas_seasonality = ["COD_SUBCATEGORIA", "puntaje","umbral","serie","serie_binaria","serie_limpia","indices_picos","CV","mean_indices_picos","std_indices_picos"]
-    seasonality_features = compute_seasonality_features(df_family=df_family, fecha_corte=fecha_corte)
+    # Calcular features de recencia
+    recency_features = compute_recency_features(
+        subcat_agg=subcat_agg,
+        ciclos_estacionales=ciclos_estacionales,
+        fecha_corte=fecha_corte
+    )
+    
+    # Calcular features de frecuencia (con ventanas adaptativas)
+    freq_features = compute_frequency_features(
+        df_family=df_family,
+        ciclos_estacionales=ciclos_estacionales,
+        fecha_corte=fecha_corte
+    )
+    features_final = recency_features.merge(freq_features, on="COD_SUBCATEGORIA", how="left")
+    
+    # Calcular SOW (con pesos adaptativos)
+    sow_features = compute_sow_features(
+        df_family=df_family,
+        ciclos_estacionales=ciclos_estacionales,
+        fecha_corte=fecha_corte
+    )
+    features_final = features_final.merge(sow_features, on="COD_SUBCATEGORIA", how="left")
+    
+    # Calcular estacionalidad (con ventanas adaptativas)
+    seasonality_features = compute_seasonality_features(
+        df_family=df_family,
+        ciclos_estacionales=ciclos_estacionales,
+        fecha_corte=fecha_corte
+    )
     features_final = features_final.merge(seasonality_features, on="COD_SUBCATEGORIA", how="left")
 
     features_final = features_final.merge(ciclos_estacionales, on="COD_SUBCATEGORIA", how="left")
@@ -614,8 +843,15 @@ def compute_features_for_family(
         for col in cols:
             if col in features_final.columns and col not in score_columns:
                 rename_map[col] = f"{prefix}_{col}"
+    
+    # Definir columnas por origen
+    columnas_ciclos = ["CODIGO_FAMILIA", "COD_SUBCATEGORIA", "ciclo_dias", "cv", "tipo_ciclo", "gaps_originales_dias", "gaps_normalizados"]
+    columnas_recencia = ["COD_SUBCATEGORIA", "recencia_hl", "castigo_recencia", "l_compra_sobre_ciclo", "dias_desde_ultima_compra", "recencia"]
+    columnas_freq = ["COD_SUBCATEGORIA", "freq_score", "avg_compras", "compras", "ratio", "ventana_dias"]
+    columnas_sow = ["COD_SUBCATEGORIA", "sow_24m", "transacciones_netas"]
+    columnas_seasonality = ["COD_SUBCATEGORIA", "puntaje", "umbral", "serie", "serie_binaria", "serie_limpia", "indices_picos", "CV", "mean_indices_picos", "std_indices_picos"]
 
-    add_renames(columnas_ciclos_estacionales, "Ciclos")
+    add_renames(columnas_ciclos, "Ciclos")
     add_renames(columnas_recencia, "Recencia")
     add_renames(columnas_freq, "Freq")
     add_renames(columnas_sow, "Sow")
