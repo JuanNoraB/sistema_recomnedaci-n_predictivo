@@ -123,19 +123,40 @@ def compute_fnn_features(fecha_corte_str):
         df_fam = df_hist_filtered[df_hist_filtered['CODIGO_FAMILIA'] == familia].copy()
         
         try:
-            features = compute_features_for_family(df_fam, familia)
+            # Pasar fecha_corte explícitamente para cálculo de ciclos largos (hasta 3 años)
+            features = compute_features_for_family(df_fam, familia, fecha_corte=fecha_corte)
             if features.empty:
                 continue
             if 'nucleo' in features.columns:
                 features = features.rename(columns={'nucleo': 'CODIGO_FAMILIA'})
             results.append(features)
-        except:
+        except Exception as e:
+            if idx <= 3:  # Solo mostrar primeros errores para debug
+                print(f"\n   ⚠️ Error en familia {familia}: {str(e)}")
             continue
     
     print()
     df_features = pd.concat(results, ignore_index=True)
-    print(f"   ✓ {len(df_features)} registros")
-    print(f"   ✓ {df_features['CODIGO_FAMILIA'].nunique()} familias")
+    
+    print(f"\n📊 Dataset completo (antes de filtrar):")
+    print(f"   Total: {len(df_features)} registros")
+    print(f"   Familias: {df_features['CODIGO_FAMILIA'].nunique()}")
+    
+    # Filtrar solo registros con ciclos detectados (cortos o largos)
+    df_antes = len(df_features)
+    df_features = df_features[df_features['Ciclos_tipo_ciclo'] != 'no_ciclico'].copy()
+    
+    print(f"\n🎯 Dataset filtrado (solo cíclicos: cortos + largos):")
+    print(f"   Total: {len(df_features)} registros (-{df_antes - len(df_features)} no_cíclicos)")
+    print(f"   Familias: {df_features['CODIGO_FAMILIA'].nunique()}")
+    
+    tipo_dist = df_features['Ciclos_tipo_ciclo'].value_counts()
+    print(f"\n   Distribución:")
+    for tipo in ['corto', 'largo']:
+        if tipo in tipo_dist.index:
+            count = tipo_dist[tipo]
+            pct = count/len(df_features)*100
+            print(f"      {tipo:6s}: {count:5d} ({pct:4.1f}%)")
     
     return df_features
 

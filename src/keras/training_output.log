@@ -1,0 +1,67 @@
+2025-12-23 19:00:02.137185: I tensorflow/tsl/cuda/cudart_stub.cc:28] Could not find cuda drivers on your machine, GPU will not be used.
+2025-12-23 19:00:02.190268: I tensorflow/tsl/cuda/cudart_stub.cc:28] Could not find cuda drivers on your machine, GPU will not be used.
+2025-12-23 19:00:02.190781: I tensorflow/core/platform/cpu_feature_guard.cc:182] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+2025-12-23 19:00:03.285939: W tensorflow/compiler/tf2tensorrt/utils/py_utils.cc:38] TF-TRT Warning: Could not find TensorRT
+================================================================================
+🧠 ENTRENAMIENTO FNN - SISTEMA DE RECOMENDACIÓN
+================================================================================
+
+⚙️  Configuración:
+   Fecha corte features: 2025-11-09
+   Target: 2025-11-10 a 2025-11-30 (siempre fijo)
+   Modo: Validación (split 80/20)
+
+⏳  Calculando features y target (esto puede tardar)...
+Traceback (most recent call last):
+  File "/home/juanchx/anaconda3/lib/python3.11/site-packages/pandas/core/arrays/integer.py", line 53, in _safe_cast
+    return values.astype(dtype, casting="safe", copy=copy)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: Cannot cast array data from dtype('float64') to dtype('int64') according to the rule 'safe'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/juanchx/Documents/Trabajo/SYSTEM_RECOMENDATION_FNN/src/keras/train_fnn.py", line 548, in <module>
+    main()
+  File "/home/juanchx/Documents/Trabajo/SYSTEM_RECOMENDATION_FNN/src/keras/train_fnn.py", line 387, in main
+    df = compute_features_and_target(fecha_corte)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/juanchx/Documents/Trabajo/SYSTEM_RECOMENDATION_FNN/src/keras/train_fnn.py", line 84, in compute_features_and_target
+    df_historico = load_historical_dataset(hist_file)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/juanchx/Documents/Trabajo/SYSTEM_RECOMENDATION_FNN/src/feature_engineering_batch.py", line 41, in load_historical_dataset
+    df = pd.read_csv(
+         ^^^^^^^^^^^^
+  File "/home/juanchx/anaconda3/lib/python3.11/site-packages/pandas/io/parsers/readers.py", line 1026, in read_csv
+    return _read(filepath_or_buffer, kwds)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/juanchx/anaconda3/lib/python3.11/site-packages/pandas/io/parsers/readers.py", line 626, in _read
+    return parser.read(nrows)
+           ^^^^^^^^^^^^^^^^^^
+  File "/home/juanchx/anaconda3/lib/python3.11/site-packages/pandas/io/parsers/readers.py", line 1923, in read
+    ) = self._engine.read(  # type: ignore[attr-defined]
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/juanchx/anaconda3/lib/python3.11/site-packages/pandas/io/parsers/c_parser_wrapper.py", line 234, in read
+    chunks = self._reader.read_low_memory(nrows)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "pandas/_libs/parsers.pyx", line 838, in pandas._libs.parsers.TextReader.read_low_memory
+  File "pandas/_libs/parsers.pyx", line 921, in pandas._libs.parsers.TextReader._read_rows
+  File "pandas/_libs/parsers.pyx", line 1066, in pandas._libs.parsers.TextReader._convert_column_data
+  File "pandas/_libs/parsers.pyx", line 1105, in pandas._libs.parsers.TextReader._convert_tokens
+  File "pandas/_libs/parsers.pyx", line 1211, in pandas._libs.parsers.TextReader._convert_with_dtype
+  File "/home/juanchx/anaconda3/lib/python3.11/site-packages/pandas/core/arrays/numeric.py", line 284, in _from_sequence_of_strings
+    return cls._from_sequence(scalars, dtype=dtype, copy=copy)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/juanchx/anaconda3/lib/python3.11/site-packages/pandas/core/arrays/masked.py", line 153, in _from_sequence
+    values, mask = cls._coerce_to_array(scalars, dtype=dtype, copy=copy)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/juanchx/anaconda3/lib/python3.11/site-packages/pandas/core/arrays/numeric.py", line 272, in _coerce_to_array
+    values, mask, _, _ = _coerce_to_data_and_mask(
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/juanchx/anaconda3/lib/python3.11/site-packages/pandas/core/arrays/numeric.py", line 229, in _coerce_to_data_and_mask
+    values = dtype_cls._safe_cast(values, dtype, copy=False)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/juanchx/anaconda3/lib/python3.11/site-packages/pandas/core/arrays/integer.py", line 59, in _safe_cast
+    raise TypeError(
+TypeError: cannot safely cast non-equivalent float64 to int64

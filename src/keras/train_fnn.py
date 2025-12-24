@@ -115,13 +115,17 @@ def compute_features_and_target(fecha_corte_str):
         df_fam = df_features_hist[df_features_hist['CODIGO_FAMILIA'] == familia].copy()
         
         try:
-            features = compute_features_for_family(df_fam, familia)
+            # Pasar fecha_corte explícitamente para cálculo de ciclos largos (hasta 3 años)
+            features = compute_features_for_family(df_fam, familia, fecha_corte=fecha_corte_features)
             if features.empty:
                 continue
             if 'nucleo' in features.columns:
                 features = features.rename(columns={'nucleo': 'CODIGO_FAMILIA'})
             results.append(features)
-        except:
+        except Exception as e:
+            # Mostrar error si es diferente al esperado
+            if idx <= 3:  # Solo mostrar primeros errores para debug
+                print(f"\n   ⚠️ Error en familia {familia}: {str(e)}")
             continue
     
     print()
@@ -144,10 +148,27 @@ def compute_features_and_target(fecha_corte_str):
     )
     df_final['target'] = df_final['target'].fillna(0).astype(int)
     
-    print(f"\n✅ Dataset final:")
+    print(f"\n📊 Dataset completo (antes de filtrar):")
     print(f"   Total: {len(df_final)} registros")
     print(f"   Target=1: {df_final['target'].sum()} ({df_final['target'].mean()*100:.1f}%)")
-    print(f"   Target=0: {(df_final['target']==0).sum()} ({(1-df_final['target'].mean())*100:.1f}%)")
+    
+    # Filtrar solo registros con ciclos detectados (cortos o largos)
+    df_antes = len(df_final)
+    target_antes = df_final['target'].sum()
+    
+    df_final = df_final[df_final['Ciclos_tipo_ciclo'] != 'no_ciclico'].copy()
+    
+    print(f"\n🎯 Dataset filtrado (solo cíclicos: cortos + largos):")
+    print(f"   Total: {len(df_final)} registros (-{df_antes - len(df_final)} no_cíclicos)")
+    print(f"   Target=1: {df_final['target'].sum()} ({df_final['target'].mean()*100:.1f}%)")
+    print(f"   Mejora balance: {df_final['target'].mean()*100:.1f}% vs {target_antes/df_antes*100:.1f}% (+{(df_final['target'].mean() - target_antes/df_antes)*100:.1f}pp)")
+    
+    tipo_dist = df_final['Ciclos_tipo_ciclo'].value_counts()
+    print(f"\n   Distribución:")
+    for tipo in ['corto', 'largo']:
+        if tipo in tipo_dist.index:
+            df_tipo = df_final[df_final['Ciclos_tipo_ciclo'] == tipo]
+            print(f"      {tipo:6s}: {len(df_tipo):5d} ({len(df_tipo)/len(df_final)*100:4.1f}%) - Target=1: {df_tipo['target'].sum()} ({df_tipo['target'].mean()*100:.1f}%)")
     
     return df_final
 
