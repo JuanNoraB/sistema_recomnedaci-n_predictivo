@@ -14,7 +14,7 @@ El script:
 1. Carga predictions del Linear (del Excel)
 2. Calcula features hasta FECHA_MODELO para FNN
 3. Carga modelo FNN entrenado
-4. Compara ambos vs data_test.xlsx (Dic 1-9)
+4. Compara ambos vs data_test.csv (Dic 1-9)
 =============================================================================
 """
 
@@ -83,12 +83,17 @@ def load_linear_predictions():
     return df
 
 
-def load_test_data():
+def load_test_data(fecha_limite='2025-12-15'):
     """Carga compras reales de diciembre (Dic 1-9)"""
-    print("\n📂 Cargando data_test.xlsx (Dic 1-9)...")
+    print("\n📂 Cargando data_test.csv (Dic 1-15)...")
     
-    df = pd.read_excel(Path(__file__).parent.parent.parent / "Data" / "data_test.xlsx")
+    df = pd.read_csv(Path(__file__).parent.parent.parent / "Data" / "data_test.csv",
+    sep=';',
+    encoding='utf-8')
     df['DIM_PERIODO'] = pd.to_datetime(df['DIM_PERIODO'])
+
+    #filtrar a solo 15 primeros dias de diciembre
+    df = df[df['DIM_PERIODO'] <= fecha_limite]
     
     print(f"   ✓ {len(df)} compras reales")
     print(f"   ✓ {df['CODIGO_FAMILIA'].nunique()} familias")
@@ -114,11 +119,12 @@ def compute_fnn_features(fecha_corte_str):
     
     # Calcular features
     familias = df_hist_filtered['CODIGO_FAMILIA'].unique()
+    print(f"   Total familias a procesar: {len(familias)}")
     results = []
     
     for idx, familia in enumerate(familias, 1):
         if idx % 100 == 0:
-            print(f"   {idx}/{len(familias)}...", end='\r')
+            print(f"   ✓ Procesadas {idx}/{len(familias)} familias ({idx/len(familias)*100:.1f}%)")
         
         df_fam = df_hist_filtered[df_hist_filtered['CODIGO_FAMILIA'] == familia].copy()
         
@@ -249,7 +255,6 @@ def formatear_df_final(df):
     "NOMBRE_SUBCATEGORIA":"NOMBRE_SUBCATEGORIA",
     "recencia_hl":"RECENCIA",
     "freq_score":"FRECUENCIA",
-    "sow_24m":"SOW",
     "season_ratio":"ESTACIONALIDAD",
     "fnn_prob":"SCORE_SUBCATEGORIA_FNN",
     "Ciclos_ciclo_dias":"CICLO",
@@ -342,7 +347,7 @@ def main():
     print(f"   Modelo FNN: Entrenado hasta {FECHA_MODELO}")
     print(f"   Features evaluación: Calculadas hasta {FECHA_EVALUACION}")
     print(f"   Linear: Excel (features hasta Nov 30)")
-    print(f"   Test: data_test.xlsx (Dic 1-9)")
+    print(f"   Test: data_test.csv (Dic 1-9)")
     
     # 1. Cargar test data
     test_df = load_test_data()
@@ -361,6 +366,7 @@ def main():
     # 5. Predecir con FNN
     print("\n🔮 [FNN] Generando predictions...")
     feature_cols = ['recencia_hl', 'freq_score', 'sow_24m', 'season_ratio']
+    #feature_cols = ['recencia_hl', 'freq_score', 'season_ratio']
     
     X = np.nan_to_num(fnn_df[feature_cols].values, nan=0.0)
     X_scaled = scaler.transform(X)

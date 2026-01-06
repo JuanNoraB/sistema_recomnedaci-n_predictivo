@@ -406,6 +406,7 @@ def main():
     
     # 2. Split (si es validación)
     feature_cols = ['recencia_hl', 'freq_score', 'sow_24m', 'season_ratio']
+    #feature_cols = ['recencia_hl', 'freq_score', 'season_ratio']
     
     X = np.nan_to_num(df[feature_cols].values, nan=0.0)
     y = df['target'].values
