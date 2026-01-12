@@ -178,7 +178,7 @@ def calcular_ciclos_cortos(
             "gaps_normalizados": gaps_norm.tolist()
         }
     else:
-        return {"ciclo_dias": 0, "cv": cv, "tipo": "no_ciclico", "razon": "cv_alto_corto"}
+        return {"ciclo_dias": 0, "cv": cv, "tipo": "no_ciclico", "razon": "cv_alto_corto", "gaps_originales": gaps_dias_reales, "gaps_normalizados":  gaps_norm.tolist()}
 
 
 def calcular_ciclos_largos(
@@ -250,7 +250,7 @@ def calcular_ciclos_largos(
             "gaps_normalizados": gaps_norm.tolist()
         }
     else:
-        return {"ciclo_dias": 0, "cv": cv, "tipo": "no_ciclico", "razon": "cv_alto_largo"}
+        return {"ciclo_dias": 0, "cv": cv, "tipo": "no_ciclico", "razon": "cv_alto_corto", "gaps_originales": gaps_dias_reales, "gaps_normalizados":  gaps_norm.tolist()}
 
 
 def calcular_ciclos_por_bloques(
