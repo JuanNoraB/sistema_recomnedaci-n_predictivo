@@ -99,21 +99,49 @@ def calcular_cv_normalizado(gaps_dias):
     
     return cv, gaps_norm
 
-def calcular_ciclos_cortos(
+def calcular_ciclos(
     df_ventas,
     familia_id,
     subcat,
     meses_historico=12,
     periodo_dias=7,
-    min_compras=3,
-    max_compras_recientes=10,
-    cv_threshold=0.5,
-    today=pd.Timestamp.today()
+    min_compras=5,
+    max_compras_recientes=15,
+    cv_threshold=0.6,
+    today=pd.Timestamp.today(),
+    tipo="corto"
 ):
-    """
-    Detecta ciclos cortos/medios (hasta ~6 meses).
-    Usa ventana de 12 meses y bloques de 7 días.
-    """
+    '''
+    RESTRICCIONES POR TIPO DE CICLO 
+    corto:
+        ciclo_dias >= 3 && ciclo_dias <= 30
+        min_compras >= 5
+        max_compras_recientes = 15
+        meses_historico = 12
+        cv = 1
+
+    corto_medio:
+        ciclo_dias >= 30 && ciclo_dias <= 75
+        min_compras >= 5
+        max_compras_recientes = 15
+        meses_historico = 12
+        cv = 0.95
+
+    media:
+        ciclo_dias >=75 && ciclo_dias <=150
+        min_compras >= 4
+        max_compras_recientes = 10
+        meses_historico = 18
+        cv = 0.6
+
+    largo:
+        ciclo_dias > 150
+        min_compras >= 4
+        max_compras_recientes = 10
+        meses_historico = 36
+        cv = 0.45
+    '''
+
     today = today.normalize()
     fecha_inicio = today - pd.DateOffset(months=meses_historico)
     
@@ -161,96 +189,56 @@ def calcular_ciclos_cortos(
     gaps_dias_reales = np.diff(fechas_unicas).astype('timedelta64[D]').astype(int)
     gaps_dias_reales = gaps_dias_reales.tolist()
     
+    ciclo_dias = float(np.mean(gaps_dias_reales))
+
+    if tipo == "corto":
+        limite_inferior = 3
+        limite_superior = 30
+        hacia_abajo = 0.25
+        hacia_arriba = 2
+    elif tipo == "corto_medio":
+        limite_inferior = 30
+        limite_superior = 75
+        hacia_abajo = 0.25
+        hacia_arriba = 1.25
+    elif tipo == "mediano":
+        limite_inferior = 75
+        limite_superior = 150
+        hacia_abajo = 0.25
+        hacia_arriba = 0.75
+    elif tipo == "largo":
+        limite_inferior = 150
+        limite_superior = 360
+        hacia_abajo = 0.2
+        hacia_arriba = 0.3
+    
+
     # Decidir si es cíclico
     if cv <= cv_threshold:
         # Ciclo promedio basado en gaps REALES
-        ciclo_dias = float(np.mean(gaps_dias_reales))
         
-        # Validar coherencia: cortos deben ser < 180 días (6 meses)
-        if ciclo_dias >= 180:
-            return {"ciclo_dias": 0, "cv": cv, "tipo": "no_ciclico", "razon": "ciclo_muy_largo_para_corto"}
-        
-        return {
-            "ciclo_dias": ciclo_dias,
+        if ciclo_dias >= limite_inferior and ciclo_dias <= limite_superior:
+            return {
+            "ciclo_dias": [ciclo_dias*(1-cv_threshold*hacia_abajo),ciclo_dias,ciclo_dias*(1+cv_threshold*hacia_arriba)],
             "cv": cv,
             "tipo": "corto",
             "gaps_originales": gaps_dias_reales,  # Días REALES
             "gaps_normalizados": gaps_norm.tolist()
-        }
-    else:
-        return {"ciclo_dias": 0, "cv": cv, "tipo": "no_ciclico", "razon": "cv_alto_corto"}
-
-
-def calcular_ciclos_largos(
-    df_ventas,
-    familia_id,
-    subcat,
-    meses_historico=36,
-    periodo_dias=30,
-    min_compras=4,
-    cv_threshold=0.7,
-    today=pd.Timestamp.today()
-):
-    """
-    Detecta ciclos largos (6 meses a 2 años).
-    Usa ventana de 36 meses y bloques de 30 días.
-    """
-    today = today.normalize()
-    fecha_inicio = today - pd.DateOffset(months=meses_historico)
-    
-    df_sub = df_ventas[
-        (df_ventas["CODIGO_FAMILIA"] == familia_id) &
-        (df_ventas["COD_SUBCATEGORIA"] == subcat) &
-        (pd.to_datetime(df_ventas["DIM_PERIODO"]) >= fecha_inicio)
-    ].copy()
-    
-    if df_sub.empty:
-        return {"ciclo_dias": 0, "cv": 999, "tipo": "no_ciclico", "razon": "sin_datos_largo"}
-    
-    # Calcular bloques
-    dias_desde_inicio = (df_sub["DIM_PERIODO"] - fecha_inicio).dt.days
-    df_sub["bloque"] = dias_desde_inicio // periodo_dias
-    
-    # Bloques únicos ordenados
-    bloques_con_compra = np.sort(df_sub["bloque"].unique())
-    
-    # Verificar mínimo de compras
-    if len(bloques_con_compra) < min_compras:
-        return {"ciclo_dias": 0, "cv": 999, "tipo": "no_ciclico", "razon": "pocas_compras_largo"}
-    
-    # Calcular gaps de BLOQUES (para CV - suavizado)
-    gaps_bloques = np.diff(bloques_con_compra)
-    if len(gaps_bloques) == 0:
-        return {"ciclo_dias": 0, "cv": 999, "tipo": "no_ciclico", "razon": "sin_gaps_largo"}
-    
-    gaps_dias_bloques = gaps_bloques * periodo_dias
-    
-    # Calcular CV normalizado usando gaps de bloques (suavizados)
-    cv, gaps_norm = calcular_cv_normalizado(gaps_dias_bloques)
-    
-    # Calcular gaps REALES (días exactos entre fechas de compra)
-    fechas_unicas = df_sub.groupby('bloque')['DIM_PERIODO'].max().sort_values()
-    gaps_dias_reales = np.diff(fechas_unicas).astype('timedelta64[D]').astype(int)
-    gaps_dias_reales = gaps_dias_reales.tolist()
-    
-    # Decidir si es cíclico
-    if cv <= cv_threshold:
-        # Ciclo promedio basado en gaps REALES
-        ciclo_dias = float(np.mean(gaps_dias_reales))
-        
-        # Validar coherencia: largos deben ser >= 180 días (6 meses)
-        if ciclo_dias < 180:
-            return {"ciclo_dias": 0, "cv": cv, "tipo": "no_ciclico", "razon": "ciclo_muy_corto_para_largo"}
-        
+            }
         return {
-            "ciclo_dias": ciclo_dias,
-            "cv": cv,
-            "tipo": "largo",
+            "ciclo_dias": [0,0,0], 
+            "cv": cv, 
+            "tipo": "no_ciclico", 
             "gaps_originales": gaps_dias_reales,  # Días REALES
             "gaps_normalizados": gaps_norm.tolist()
-        }
+            }
     else:
-        return {"ciclo_dias": 0, "cv": cv, "tipo": "no_ciclico", "razon": "cv_alto_largo"}
+        return {"ciclo_dias": 0,
+        "cv": cv,
+        "tipo": "no_ciclico",
+        "gaps_originales": gaps_dias_reales,
+        "gaps_normalizados": gaps_norm.tolist()}
+
 
 
 def calcular_ciclos_por_bloques(
@@ -273,49 +261,50 @@ def calcular_ciclos_por_bloques(
     resultados = []
     
     for subcat in subcategorias:
+        ciclos_clase = [
+            {"tipo": "corto", "cv_threshold": 1,"min_compras": 5,"max_compras_recientes": 15,"meses_historico": 12},
+            {"tipo": "corto_medio", "cv_threshold": 0.95,"min_compras": 5,"max_compras_recientes": 15,"meses_historico": 12},
+            {"tipo": "mediano", "cv_threshold": 0.6,"min_compras": 4,"max_compras_recientes": 10,"meses_historico": 18},
+            {"tipo": "largo", "cv_threshold": 0.45,"min_compras": 4,"max_compras_recientes": 10,"meses_historico": 36}
+        ]
+        resultado = {"ciclo_dias": 0, "cv": 999, "tipo": "no_ciclico", "razon": "sin_gaps"}
+
         # FASE 1: Intentar ciclos cortos
-        resultado_corto = calcular_ciclos_cortos(
+        for ciclo in ciclos_clase:
+            resultado = calcular_ciclos(
             df_ventas=df_ventas,
             familia_id=familia_id,
+            meses_historico=ciclo["meses_historico"],
+            min_compras=ciclo["min_compras"],
+            max_compras_recientes=ciclo["max_compras_recientes"],
+            periodo_dias=5 if ciclo["tipo"] == "corto" else 7,
             subcat=subcat,
-            today=today
-        )
-        
-        if resultado_corto["ciclo_dias"] > 0:
-            # Encontró ciclo corto
-            resultados.append({
-                "CODIGO_FAMILIA": familia_id,
-                "COD_SUBCATEGORIA": subcat,
-                "ciclo_dias": resultado_corto["ciclo_dias"],
-                "cv": resultado_corto["cv"],
-                "tipo_ciclo": resultado_corto["tipo"],
-                "gaps_originales_dias": resultado_corto.get("gaps_originales", []),
-                "gaps_normalizados": resultado_corto.get("gaps_normalizados", [])
-            })
-        else:
-            # FASE 2: Intentar ciclos largos
-            resultado_largo = calcular_ciclos_largos(
-                df_ventas=df_ventas,
-                familia_id=familia_id,
-                subcat=subcat,
-                today=today
+            today=today,
+            cv_threshold=ciclo["cv_threshold"],
+            tipo=ciclo["tipo"]
             )
-            
-            resultados.append({
+        
+            if resultado["ciclo_dias"][1] > 0:
+                # Encontró ciclo corto
+                resultados.append({
                 "CODIGO_FAMILIA": familia_id,
                 "COD_SUBCATEGORIA": subcat,
-                "ciclo_dias": resultado_largo["ciclo_dias"],
-                "cv": resultado_largo["cv"],
-                "tipo_ciclo": resultado_largo["tipo"],
-                "gaps_originales_dias": resultado_largo.get("gaps_originales", []),
-                "gaps_normalizados": resultado_largo.get("gaps_normalizados", [])
-            })
-    
+                "ciclo_dias": resultado["ciclo_dias"],
+                "cv": resultado["cv"],
+                "tipo_ciclo": resultado["tipo"],
+                "gaps_originales_dias": resultado.get("gaps_originales", []),
+                "gaps_normalizados": resultado.get("gaps_normalizados", [])
+                })
+                break
+      
     df_resultado = pd.DataFrame(resultados)
     
     # Ordenar: cíclicos primero, por CV ascendente
     if not df_resultado.empty:
-        df_resultado = df_resultado.sort_values(["ciclo_dias", "cv"], ascending=[False, True]).reset_index(drop=True)
+        # Ordenar por ciclo_dias[1] y cv
+        df_resultado['_ciclo_idx1'] = df_resultado['ciclo_dias'].apply(lambda x: x[1] if isinstance(x, list) and len(x) > 1 else 0)
+        df_resultado = df_resultado.sort_values(["_ciclo_idx1", "cv"], ascending=[False, True]).reset_index(drop=True)
+        df_resultado = df_resultado.drop(columns=['_ciclo_idx1'])
     
     return df_resultado
     
@@ -330,17 +319,62 @@ def compute_recency_features(subcat_agg: pd.DataFrame,
         fecha_corte - subcat_agg["ultima_compra"]
     ).dt.days.clip(lower=0)
 
+
+
+
     # pegar ciclo_dias
     subcat_agg = subcat_agg.merge(ciclos_estacionales, on="COD_SUBCATEGORIA", how="left")
 
-    mask_dias = subcat_agg["ciclo_dias"] > 0.0
+
+    '''
+    Funsión normal cola derecha
+    
+    '''
+    # ======= Inputs =========
+    inferior = subcat_agg["ciclo_dias"][0]
+    mu = subcat_agg["ciclo_dias"][1]
+    superior = subcat_agg["ciclo_dias"][2]
+
+    # ====== Derived extra points ========
+    x_left_far = inferior / 2
+    k_right = 5.0
+    x_right_far = mu + k_right * (superior - mu)
+    # ====== Derived extra points ========
+
+    def calibrate_side(d_edge, d_far, t_edge, t_far):
+        p = math.log(math.log(1/t_edge)/math.log(1/t_far)) / math.log(d_edge/d_far)
+        s = d_edge / (math.log(1/t_edge)**(1.0/p))
+        return p, s
+    
+    def make_f(t_edge=0.95, y_left_far=0.20, y_right_far=0.20):
+        dL_edge = mu - inferior
+        dL_far  = mu - x_left_far
+        dR_edge = superior - mu
+        dR_far  = x_right_far - mu
+
+        pL, sL = calibrate_side(dL_edge, dL_far, t_edge, y_left_far)
+        pR, sR = calibrate_side(dR_edge, dR_far, t_edge, y_right_far)
+        
+        def f(x):
+            x = np.asarray(x, dtype=float)
+            y = np.empty_like(x)
+            left = x <= mu
+            y[left]  = np.exp(-(((mu - x[left]) / sL) ** pL))
+            y[~left] = np.exp(-(((x[~left] - mu) / sR) ** pR))
+            return y
+
+        return f, dict(pL=pL, sL=sL, pR=pR, sR=sR)
+
+
+    # ====== Derived extra points ========
+    mask_dias = subcat_agg["ciclo_dias"][1] > 0.0
 
     # recencia half-life base
     subcat_agg["recencia"] = 0.0
     subcat_agg.loc[mask_dias, "recencia"] = 1 - np.power(
         2,
         - subcat_agg.loc[mask_dias, "dias_desde_ultima_compra"].to_numpy()
-          / subcat_agg.loc[mask_dias, "ciclo_dias"].to_numpy()
+          / subcat_agg.loc[mask_dias, "ciclo_dias"][1].to_numpy()
     )
     subcat_agg.loc[mask_dias, "recencia"] = np.minimum(1.0,2.0*subcat_agg.loc[mask_dias, "recencia"])
 
