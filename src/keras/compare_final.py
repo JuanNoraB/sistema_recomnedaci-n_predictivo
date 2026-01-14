@@ -42,7 +42,7 @@ from feature_engineering_batch import compute_features_for_family, load_historic
 # CONFIGURACIÓN
 # =============================================================================
 
-FECHA_MODELO = '2025-11-09'      # ← Modelo entrenado (por el momento siempre Nov 9)
+FECHA_MODELO = '2025-11-09'      # ← Carga model_1109.h5 (recién entrenado con 7 features)
 FECHA_EVALUACION = '2025-11-30'  # ← Features para evaluar (por el momento siempre Nov 30)
 
 
@@ -83,9 +83,9 @@ def load_linear_predictions():
     return df
 
 
-def load_test_data(fecha_limite='2025-12-15'):
-    """Carga compras reales de diciembre (Dic 1-9)"""
-    print("\n📂 Cargando data_test.csv (Dic 1-15)...")
+def load_test_data(fecha_limite='2025-12-21'):
+    """Carga compras reales de diciembre (Dic 1-21)"""
+    print("\n📂 Cargando data_test.csv (Dic 1-21)...")
     
     df = pd.read_csv(Path(__file__).parent.parent.parent / "Data" / "data_test.csv",
     sep=';',
@@ -144,21 +144,27 @@ def compute_fnn_features(fecha_corte_str):
     print()
     df_features = pd.concat(results, ignore_index=True)
     
-    print(f"\n📊 Dataset completo para predicción:")
+    print(f"\n📊 Dataset completo (antes de filtrar):")
     print(f"   Total: {len(df_features)} registros")
     print(f"   Familias: {df_features['CODIGO_FAMILIA'].nunique()}")
     
-    # Mostrar distribución de ciclos (pero NO filtrar - el modelo decide)
+    # Mostrar distribución de ciclos
     tipo_dist = df_features['Ciclos_tipo_ciclo'].value_counts()
     print(f"\n   Distribución de ciclos:")
-    for tipo in ['corto', 'largo', 'no_ciclico']:
+    for tipo in ['corto', 'corto_medio', 'mediano', 'largo', 'no_ciclico']:
         if tipo in tipo_dist.index:
             count = tipo_dist[tipo]
             pct = count/len(df_features)*100
             print(f"      {tipo:11s}: {count:5d} ({pct:4.1f}%)")
     
-    print(f"\n   💡 El modelo predecirá para TODAS las subcategorías")
-    print(f"      (no_cíclicos probablemente tendrán scores bajos)")
+    # IMPORTANTE: Filtrar no_ciclicos (mismo criterio que training)
+    df_antes = len(df_features)
+    df_features = df_features[df_features['Ciclos_tipo_ciclo'] != 'no_ciclico'].copy()
+    
+    print(f"\n   🎯 Filtrado (solo cíclicos):")
+    print(f"      Total: {len(df_features)} registros (-{df_antes - len(df_features)} no_ciclicos)")
+    print(f"      Familias: {df_features['CODIGO_FAMILIA'].nunique()}")
+    print(f"\n   💡 Modelo entrenado SOLO con cíclicos → predecir SOLO cíclicos")
     
     return df_features
 
@@ -201,6 +207,11 @@ def evaluate_model(predictions_df, test_df, model_name, score_col='score_final',
         df_pred = predictions_df[predictions_df['CODIGO_FAMILIA'] == familia].copy()
         
         if len(df_pred) == 0:
+            familias_sin_data += 1
+            continue
+        
+        # IMPORTANTE: Filtrar familias con menos de K subcategorías (mismo criterio que training)
+        if len(df_pred) < top_k:
             familias_sin_data += 1
             continue
         
@@ -254,13 +265,15 @@ def formatear_df_final(df):
     "COD_SUBCATEGORIA":"COD_SUBCATEGORIA",
     "NOMBRE_SUBCATEGORIA":"NOMBRE_SUBCATEGORIA",
     "recencia_hl":"RECENCIA",
-    "freq_score":"FRECUENCIA",
+    "freq_baja":"FREQ_BAJA",
+    "freq_media":"FREQ_MEDIA",
+    "freq_alta":"FREQ_ALTA",
+    "cv_invertido":"CV_INVERTIDO",
+    "sow_24m":"SOW_24M",
     "season_ratio":"ESTACIONALIDAD",
     "fnn_prob":"SCORE_SUBCATEGORIA_FNN",
     "Ciclos_ciclo_dias":"CICLO",
-    "Recencia_dias_desde_ultima_compra":"DIAS_ULTIMA_COMPRA",
-    "Seasonality_mean_indices_picos":"MEDIA_ESTACION",
-    "Seasonality_std_indices_picos":"STD_DEV_ESTACION"}, inplace=True)
+    "Recencia_dias_desde_ultima_compra":"DIAS_ULTIMA_COMPRA"}, inplace=True)
 
     #read item.xlsx
     item_file = Path(__file__).parent.parent.parent / "Data" / "item.xlsx"
@@ -365,8 +378,8 @@ def main():
     
     # 5. Predecir con FNN
     print("\n🔮 [FNN] Generando predictions...")
-    feature_cols = ['recencia_hl', 'freq_score', 'sow_24m', 'season_ratio']
-    #feature_cols = ['recencia_hl', 'freq_score', 'season_ratio']
+    # 7 features: recencia + 3 frecuencias + cv_invertido + SOW + seasonalidad
+    feature_cols = ['recencia_hl', 'freq_baja', 'freq_media', 'freq_alta', 'cv_invertido', 'sow_24m', 'season_ratio']
     
     X = np.nan_to_num(fnn_df[feature_cols].values, nan=0.0)
     X_scaled = scaler.transform(X)

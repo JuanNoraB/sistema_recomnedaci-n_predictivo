@@ -118,14 +118,18 @@ def compute_features_and_target(fecha_corte_str):
             # Pasar fecha_corte explícitamente para cálculo de ciclos largos (hasta 3 años)
             features = compute_features_for_family(df_fam, familia, fecha_corte=fecha_corte_features)
             if features.empty:
+                if idx <= 5:
+                    print(f"\n   ⚠️ Familia {familia}: features vacío")
                 continue
             if 'nucleo' in features.columns:
                 features = features.rename(columns={'nucleo': 'CODIGO_FAMILIA'})
             results.append(features)
         except Exception as e:
-            # Mostrar error si es diferente al esperado
-            if idx <= 3:  # Solo mostrar primeros errores para debug
-                print(f"\n   ⚠️ Error en familia {familia}: {str(e)}")
+            # Mostrar TODOS los errores para debug
+            print(f"\n   ⚠️ Error familia {familia}: {str(e)}")
+            import traceback
+            if idx <= 3:
+                traceback.print_exc()
             continue
     
     print()
@@ -152,23 +156,23 @@ def compute_features_and_target(fecha_corte_str):
     print(f"   Total: {len(df_final)} registros")
     print(f"   Target=1: {df_final['target'].sum()} ({df_final['target'].mean()*100:.1f}%)")
     
-    # Filtrar solo registros con ciclos detectados (cortos o largos)
+    # Filtrar solo registros con ciclos detectados (4 tipos: corto, corto_medio, mediano, largo)
     df_antes = len(df_final)
     target_antes = df_final['target'].sum()
     
     df_final = df_final[df_final['Ciclos_tipo_ciclo'] != 'no_ciclico'].copy()
     
-    print(f"\n🎯 Dataset filtrado (solo cíclicos: cortos + largos):")
+    print(f"\n🎯 Dataset filtrado (solo cíclicos: 4 tipos):")
     print(f"   Total: {len(df_final)} registros (-{df_antes - len(df_final)} no_cíclicos)")
     print(f"   Target=1: {df_final['target'].sum()} ({df_final['target'].mean()*100:.1f}%)")
     print(f"   Mejora balance: {df_final['target'].mean()*100:.1f}% vs {target_antes/df_antes*100:.1f}% (+{(df_final['target'].mean() - target_antes/df_antes)*100:.1f}pp)")
     
     tipo_dist = df_final['Ciclos_tipo_ciclo'].value_counts()
-    print(f"\n   Distribución:")
-    for tipo in ['corto', 'largo']:
+    print(f"\n   Distribución de tipos de ciclo:")
+    for tipo in ['corto', 'corto_medio', 'mediano', 'largo']:
         if tipo in tipo_dist.index:
             df_tipo = df_final[df_final['Ciclos_tipo_ciclo'] == tipo]
-            print(f"      {tipo:6s}: {len(df_tipo):5d} ({len(df_tipo)/len(df_final)*100:4.1f}%) - Target=1: {df_tipo['target'].sum()} ({df_tipo['target'].mean()*100:.1f}%)")
+            print(f"      {tipo:12s}: {len(df_tipo):5d} ({len(df_tipo)/len(df_final)*100:4.1f}%) - Target=1: {df_tipo['target'].sum()} ({df_tipo['target'].mean()*100:.1f}%)")
     
     return df_final
 
@@ -183,7 +187,7 @@ def create_model():
     - Output: 1 neurona + Sigmoid (probabilidad 0-1)
     """
     model = models.Sequential([
-        layers.Input(shape=(4,)),
+        layers.Input(shape=(7,)),
         layers.Dense(64, activation='relu', name='hidden1'),
         layers.Dropout(0.3),
         layers.Dense(32, activation='relu', name='hidden2'),
@@ -405,8 +409,8 @@ def main():
     print("   ✓ Dataset final generado.")
     
     # 2. Split (si es validación)
-    feature_cols = ['recencia_hl', 'freq_score', 'sow_24m', 'season_ratio']
-    #feature_cols = ['recencia_hl', 'freq_score', 'season_ratio']
+    # 7 features: recencia + 3 frecuencias + cv_invertido + SOW + seasonalidad
+    feature_cols = ['recencia_hl', 'freq_baja', 'freq_media', 'freq_alta', 'cv_invertido', 'sow_24m', 'season_ratio']
     
     X = np.nan_to_num(df[feature_cols].values, nan=0.0)
     y = df['target'].values
