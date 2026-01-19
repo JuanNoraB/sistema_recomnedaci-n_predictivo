@@ -124,6 +124,7 @@ def main():
         'freq_media',
         'freq_alta',
         'cv_invertido',
+        'Ciclos_cv',
         'sow_24m',
         'season_ratio',
         
@@ -131,6 +132,7 @@ def main():
         'ciclo_min',                      # Ciclo inferior
         'ciclo_promedio',                 # Ciclo promedio
         'ciclo_max',                      # Ciclo superior
+        'Ciclos_ciclo_dias',              # Ciclo días
         'Ciclos_gaps_normalizados',       # Gaps normalizados
         'Ciclos_tipo_ciclo',              # Tipo de ciclo
         

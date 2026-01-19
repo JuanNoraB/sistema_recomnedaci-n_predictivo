@@ -156,20 +156,20 @@ def compute_features_and_target(fecha_corte_str):
     print(f"   Total: {len(df_final)} registros")
     print(f"   Target=1: {df_final['target'].sum()} ({df_final['target'].mean()*100:.1f}%)")
     
-    # Filtrar solo registros con ciclos detectados (4 tipos: corto, corto_medio, mediano, largo)
+    # NO filtrar no_ciclico - entrenar con TODOS los tipos de ciclo
+    # Hipótesis: modelo aprenderá a usar sow para no_ciclico
     df_antes = len(df_final)
     target_antes = df_final['target'].sum()
     
-    df_final = df_final[df_final['Ciclos_tipo_ciclo'] != 'no_ciclico'].copy()
+    # df_final = df_final[df_final['Ciclos_tipo_ciclo'] != 'no_ciclico'].copy()  # COMENTADO
     
-    print(f"\n🎯 Dataset filtrado (solo cíclicos: 4 tipos):")
-    print(f"   Total: {len(df_final)} registros (-{df_antes - len(df_final)} no_cíclicos)")
+    print(f"\n🎯 Dataset de entrenamiento (INCLUYE no_ciclico):")
+    print(f"   Total: {len(df_final)} registros")
     print(f"   Target=1: {df_final['target'].sum()} ({df_final['target'].mean()*100:.1f}%)")
-    print(f"   Mejora balance: {df_final['target'].mean()*100:.1f}% vs {target_antes/df_antes*100:.1f}% (+{(df_final['target'].mean() - target_antes/df_antes)*100:.1f}pp)")
     
     tipo_dist = df_final['Ciclos_tipo_ciclo'].value_counts()
     print(f"\n   Distribución de tipos de ciclo:")
-    for tipo in ['corto', 'corto_medio', 'mediano', 'largo']:
+    for tipo in ['corto', 'corto_medio', 'mediano', 'largo', 'no_ciclico']:
         if tipo in tipo_dist.index:
             df_tipo = df_final[df_final['Ciclos_tipo_ciclo'] == tipo]
             print(f"      {tipo:12s}: {len(df_tipo):5d} ({len(df_tipo)/len(df_final)*100:4.1f}%) - Target=1: {df_tipo['target'].sum()} ({df_tipo['target'].mean()*100:.1f}%)")

@@ -1,0 +1,50 @@
+*******************************
+Con modificacion de ultimas caracteristicas + no_ciclicos + CERCA DE 3000 FAMILIAS
+Train: Evaluando TOP-3 en test set...
+   Precision@3: 0.3220 (32.2%)
+   Recall@3: 0.5364 (53.6%)
+   Hit Rate@3: 0.7216 (72.2%)
+
+
+
+Familias evaluadas: 2516
+Test: Evaluando TOP-3 en test set 21 dias diciembre
+   Precision@3: 0.4217 (42.2%)
+   Recall@3: 0.1926 (19.3%)
+   Hit Rate@3: 0.7448 (74.5%)
+
+*******************************
+CON MODIFICACION DE ULTIMAS CARACTERISTICAS + NO_CICLICOS SOLO 620 FAMILIAS MAS VENDIDAS
+📊 Evaluando TOP-3 en test set...
+   Precision@3: 0.3763 (37.6%)
+   Recall@3: 0.5071 (50.7%)
+   Hit Rate@3: 0.7646 (76.5%)
+
+
+📊 [FNN] Evaluando TOP-3...
+   Familias evaluadas: 591
+   Familias sin data: 1925
+   Precision@3: 0.5798 (58.0%)
+   Recall@3: 0.1564 (15.6%)
+   Hit Rate@3: 0.8646 (86.5%)
+
+*******************************
+Con modificacion de ultimas caracteristicas + no_ciclicos + CERCA DE 3000 FAMILIAS
+Train: Evaluando TOP-3 en test set...
+   Precision@3: 0.3220 (32.2%)
+   Recall@3: 0.5364 (53.6%)
+   Hit Rate@3: 0.7216 (72.2%)
+
+
+
+📊 [FNN] Evaluando TOP-3...
+   Familias evaluadas: 591
+
+   Precision@3: 0.5798 (58.0%)
+   Recall@3: 0.1564 (15.6%)
+   Hit Rate@3: 0.8646 (86.5%)
+
+
+   Precision@3: 0.5623 (56.2%)
+   Recall@3: 0.1492 (14.9%)
+   Hit Rate@3: 0.8596 (86.0%)

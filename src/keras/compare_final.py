@@ -157,14 +157,27 @@ def compute_fnn_features(fecha_corte_str):
             pct = count/len(df_features)*100
             print(f"      {tipo:11s}: {count:5d} ({pct:4.1f}%)")
     
-    # IMPORTANTE: Filtrar no_ciclicos (mismo criterio que training)
-    df_antes = len(df_features)
-    df_features = df_features[df_features['Ciclos_tipo_ciclo'] != 'no_ciclico'].copy()
+    # IMPORTANTE: NO filtrar no_ciclicos en evaluación
+    # El modelo fue entrenado con cíclicos (patrones estables)
+    # Pero puede generalizar a no_ciclico basándose en sow_24m (feature más poderosa)
+    # Esto permite recomendar subcategorías no_ciclico con sow alto
     
-    print(f"\n   🎯 Filtrado (solo cíclicos):")
-    print(f"      Total: {len(df_features)} registros (-{df_antes - len(df_features)} no_ciclicos)")
+    df_antes = len(df_features)
+    # df_features = df_features[df_features['Ciclos_tipo_ciclo'] != 'no_ciclico'].copy()  # COMENTADO
+    
+    # Mostrar distribución final
+    tipo_dist_final = df_features['Ciclos_tipo_ciclo'].value_counts()
+    print(f"\n   🎯 Dataset de evaluación (INCLUYE no_ciclico):")
+    print(f"      Total: {len(df_features)} registros")
     print(f"      Familias: {df_features['CODIGO_FAMILIA'].nunique()}")
-    print(f"\n   💡 Modelo entrenado SOLO con cíclicos → predecir SOLO cíclicos")
+    print(f"\n   Distribución final:")
+    for tipo in ['corto', 'corto_medio', 'mediano', 'largo', 'no_ciclico']:
+        if tipo in tipo_dist_final.index:
+            count = tipo_dist_final[tipo]
+            pct = count/len(df_features)*100
+            print(f"      {tipo:11s}: {count:5d} ({pct:4.1f}%)")
+    
+    print(f"\n   💡 Modelo entrenado con cíclicos → evalúa TODOS (red decide por sow)")
     
     return df_features
 
