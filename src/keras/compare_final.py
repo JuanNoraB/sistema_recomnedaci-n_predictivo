@@ -110,6 +110,16 @@ def compute_fnn_features(fecha_corte_str):
     hist_file = Path(__file__).parent.parent.parent / "Data" / "Historico_08122025.csv"
     df_historico = load_historical_dataset(hist_file)
     
+    ##*************############FILTRO DEBGUG PARA PERSONA Y CATEGORIA  113-116 29-34 398 ###########################
+    #score alto muchas compras 1759533761 8792
+    #1759533761	9627 score alto 0.3
+    #socre bajo muchas compras  1711285286	2934 score 0.1
+    #familia = 1712575826    
+
+    #subcategoria = 9158
+    #df_historico = df_historico[(df_historico['CODIGO_FAMILIA'] == familia) & (df_historico['COD_SUBCATEGORIA'] == subcategoria)]
+    ####***************#################################################
+    
     # Filtrar
     fecha_corte = pd.Timestamp(fecha_corte_str)
     df_hist_filtered = df_historico[df_historico['DIM_PERIODO'] <= fecha_corte].copy()
@@ -164,7 +174,7 @@ def compute_fnn_features(fecha_corte_str):
     
     df_antes = len(df_features)
     # df_features = df_features[df_features['Ciclos_tipo_ciclo'] != 'no_ciclico'].copy()  # COMENTADO
-    
+    # df_features = df_features[df_features['Ciclos_tipo_ciclo'] == 'corto_medio'].copy()  # COMENTADO - AHORA SÍ
     # Mostrar distribución final
     tipo_dist_final = df_features['Ciclos_tipo_ciclo'].value_counts()
     print(f"\n   🎯 Dataset de evaluación (INCLUYE no_ciclico):")
@@ -286,7 +296,8 @@ def formatear_df_final(df):
     "season_ratio":"ESTACIONALIDAD",
     "fnn_prob":"SCORE_SUBCATEGORIA_FNN",
     "Ciclos_ciclo_dias":"CICLO",
-    "Recencia_dias_desde_ultima_compra":"DIAS_ULTIMA_COMPRA"}, inplace=True)
+    "Recencia_dias_desde_ultima_compra":"DIAS_ULTIMA_COMPRA",
+    "ciclo_dias_mu":"CICLO_DIAS_MU"}, inplace=True)
 
     #read item.xlsx
     item_file = Path(__file__).parent.parent.parent / "Data" / "item.xlsx"
@@ -338,6 +349,7 @@ def formatear_df_final(df):
     'SCORE_SUBCATEGORIA',
     'CICLO',
     'DIAS_ULTIMA_COMPRA',
+    'CICLO_DIAS_MU',
     'MEDIA_ESTACION',
     'STD_DEV_ESTACION',
     'COD_DIVISION_COMERCIAL',
@@ -386,15 +398,38 @@ def main():
     with suppress_stdout():
         fnn_df = compute_fnn_features(FECHA_EVALUACION)
     
+    ##*******##############################
+    #return fnn_df
+    #********##############################
     # 4. Cargar modelo FNN (SIEMPRE Nov 9 - sin leakage)
     model, scaler = load_fnn_model(FECHA_MODELO)
     
     # 5. Predecir con FNN
     print("\n🔮 [FNN] Generando predictions...")
-    # 7 features: recencia + 3 frecuencias + cv_invertido + SOW + seasonalidad
-    feature_cols = ['recencia_hl', 'freq_baja', 'freq_media', 'freq_alta', 'cv_invertido', 'sow_24m', 'season_ratio']
+    # 8 features base + 4 one-hot (tipo_ciclo) = 12 features
+    base_feature_cols = [
+        'recencia_hl', 
+        'freq_baja', 
+        'freq_media', 
+        'freq_alta', 
+        'cv_invertido', 
+        'sow_24m', 
+        'season_ratio',
+        'ciclo_dias_mu',
+        'Ciclos_ciclo_binario_c'
+    ]
     
-    X = np.nan_to_num(fnn_df[feature_cols].values, nan=0.0)
+    # One-hot encoding de tipo_ciclo_b (mismo que train_fnn.py)
+    tipo_ciclo_dummies = pd.get_dummies(fnn_df['Debug_ciclos_tipo_ciclo_b'], prefix='tipo', drop_first=True)
+    
+    # Concatenar features base + one-hot
+    X_base = fnn_df[base_feature_cols]
+    X_all = pd.concat([X_base.reset_index(drop=True), tipo_ciclo_dummies.reset_index(drop=True)], axis=1)
+    
+    print(f"   ✓ Features: {X_all.shape[1]} columnas")
+    print(f"   ✓ Columnas: {list(X_all.columns)}")
+    
+    X = np.nan_to_num(X_all.values, nan=0.0)
     X_scaled = scaler.transform(X)
     
     probs = model.predict(X_scaled, verbose=0).flatten()
@@ -406,7 +441,21 @@ def main():
     fnn_df.to_csv('predictions_fnn_final.csv', index=False)
     print(f"   ✓ Guardado: predictions_fnn_final.csv")
     
-    # 6. Evaluar FNN
+    ############################################################################
+    # FILTRO OPCIONAL: Descomentar para evaluar SOLO un tipo de ciclo específico
+    ############################################################################
+    # print(f"\n🔍 Filtrando test para solo evaluar corto_medio...")
+    # print(f"   Test original: {len(test_df)} compras")
+    # 
+    # # Solo mantener compras de (FAMILIA, SUBCAT) que existen en fnn_df (corto_medio)
+    # subcat_validas = set(fnn_df[['CODIGO_FAMILIA', 'COD_SUBCATEGORIA']].apply(tuple, axis=1))
+    # test_df_filtrado = test_df[test_df[['CODIGO_FAMILIA', 'COD_SUBCATEGORIA']].apply(tuple, axis=1).isin(subcat_validas)].copy()
+    # 
+    # print(f"   Test filtrado: {len(test_df_filtrado)} compras (solo corto_medio)")
+    # print(f"   ✓ Solo se evaluarán compras de subcategorías corto_medio")
+    ############################################################################
+    
+    # 6. Evaluar FNN (con todas las compras del test)
     fnn_results = evaluate_model(fnn_df, test_df, 'FNN', 'fnn_prob', 3)
     
     # 7. Comparar
@@ -440,7 +489,7 @@ def main():
     
     # Guardar
     comparison_df.to_csv('comparison_final.csv', index=False)
-    fnn_df = formatear_df_final(fnn_df)  # Ya guarda el archivo dentro de la función
+    fnn_df = formatear_df_final(fnn_df) 
     print(f"\n💾 Guardado: comparison_final.csv")
     
     print("\n" + "=" * 80)

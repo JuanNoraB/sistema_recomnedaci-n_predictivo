@@ -90,7 +90,7 @@ def calcular_cv_normalizado(gaps_dias):
         return 999.0, arr
     
     gaps_norm = arr / min_gap
-    
+  
     # Calcular CV normalizado
     mean_norm = np.mean(gaps_norm)
     std_norm = np.std(gaps_norm)
@@ -113,7 +113,8 @@ def calcular_ciclos(
     max_compras_recientes=15,
     cv_threshold=0.6,
     today=pd.Timestamp.today(),
-    tipo="corto"
+    tipo="corto",
+    clase_de_calculo = 1
 ):
     '''
     RESTRICCIONES POR TIPO DE CICLO 
@@ -146,54 +147,113 @@ def calcular_ciclos(
         cv = 0.45
     '''
 
+    '''
+    Cambio del calculo de cv con para frecuencias dependiendo de tipo de ciclo calculos replica
+   				CON 2 	CON 3
+        0	30	C	1	60	90
+        31	75	CM	0.95	150	225
+        75	150	M	0.6	300	450
+        150	300	L	0.45	600	900
+
+    corto = 60/90  --30 
+    medio-cortp = 150-225
+    mediano = 300/450
+    largo = 600/900
+    '''
+    if tipo == 'corto':
+        dias_cv =60
+    elif tipo == "corto_medio":
+        dias_cv = 150
+    elif tipo == "mediano":
+        dias_cv = 300
+    elif tipo == "largo":
+        dias_cv = 600
+    
+
     today = today.normalize()
     fecha_inicio = today - pd.DateOffset(months=meses_historico)
+
+    fecha_inicio_cv = today - pd.DateOffset(days=dias_cv)
     
     df_sub = df_ventas[
         (df_ventas["CODIGO_FAMILIA"] == familia_id) &
         (df_ventas["COD_SUBCATEGORIA"] == subcat) &
         (pd.to_datetime(df_ventas["DIM_PERIODO"]) >= fecha_inicio)
     ].copy()
+
+    df_cv = df_ventas[
+        (df_ventas["CODIGO_FAMILIA"] == familia_id) &
+        (df_ventas["COD_SUBCATEGORIA"] == subcat) &
+        (pd.to_datetime(df_ventas["DIM_PERIODO"]) >= fecha_inicio_cv)
+    ].copy()
     
     if df_sub.empty:
-        return {"ciclo_dias": [0,0,0], "cv": 999, "tipo": "no_ciclico", "razon": "sin_datos"}
+        return {"ciclo_dias": [0,0,0], "cv": 999, "tipo": "no_ciclico", "razon": f"sin_datos {tipo}"}
     
     # Calcular bloques
+    #gaps para poder determinar
+
+
     dias_desde_inicio = (df_sub["DIM_PERIODO"] - fecha_inicio).dt.days
     df_sub["bloque"] = dias_desde_inicio // periodo_dias
+
+
+    dias_desde_inicio_cv = (df_cv["DIM_PERIODO"] - fecha_inicio_cv).dt.days
+    df_cv["bloque"] = dias_desde_inicio_cv // periodo_dias
     
     # Ordenar por fecha y tomar bloques únicos
     df_sub = df_sub.sort_values("DIM_PERIODO", ascending=False)
     bloques_con_compra = np.sort(df_sub["bloque"].unique())
-    
+
+    df_cv = df_cv.sort_values("DIM_PERIODO", ascending=False)
+    bloques_con_compra_cv = np.sort(df_cv["bloque"].unique())
+
+    #df_sub[['DIM_PERIODO','bloque']].sort_values(by='DIM_PERIODO',ascending=False)
     # Limitar a últimas N compras
     if len(bloques_con_compra) > max_compras_recientes:
         bloques_con_compra = bloques_con_compra[-max_compras_recientes:]
     
     # Verificar mínimo de compras
-    if len(bloques_con_compra) < min_compras:
-        return {"ciclo_dias": [0,0,0], "cv": 999, "tipo": "no_ciclico", "razon": "pocas_compras_corto"}
+    if len(bloques_con_compra) < 2:
+        return {"ciclo_dias": [0,0,0], "cv": 999, "tipo": "no_ciclico", "razon": f"pocas_compras 2 {tipo}","gaps_originales": [], "gaps_normalizados": [],'gaps_ciclos_bloques': []}
     
+
     # Calcular gaps de BLOQUES (para CV - suavizado)
     gaps_bloques = np.diff(bloques_con_compra)
+
+    gapas_bloques_cv = np.diff(bloques_con_compra_cv)
     if len(gaps_bloques) == 0:
-        return {"ciclo_dias": [0,0,0], "cv": 999, "tipo": "no_ciclico", "razon": "sin_gaps"}
+        # Solo 1 compra: no hay forma de calcular gaps
+        return {"ciclo_dias": [0,0,0], "cv": 999, "tipo": "no_ciclico", "razon": f"sin_gaps {tipo}", "gaps_originales": [], "gaps_normalizados": [],'gaps_ciclos_bloques': []}
     
     gaps_dias_bloques = gaps_bloques * periodo_dias
+    gaps_dias_bloques_cv = gapas_bloques_cv * periodo_dias
     
     # Calcular CV normalizado usando gaps de bloques (suavizados)
-    cv, gaps_norm = calcular_cv_normalizado(gaps_dias_bloques)
+    _, gaps_norm = calcular_cv_normalizado(gaps_dias_bloques)
+    cv,_ = calcular_cv_normalizado(gaps_dias_bloques_cv)
+
     
-    # Calcular gaps REALES (días exactos entre fechas de compra)
+
+    # Calcular gaps REALES TENDIENDO A LA ALTA POR EL MAX
     # Para esto, tomamos las fechas únicas ordenadas
     fechas_unicas = df_sub.groupby('bloque')['DIM_PERIODO'].max().sort_values()
+    # ver si sobrepasa las compras a maximo reciente para corto por ejemplo 15 
     if len(bloques_con_compra) > max_compras_recientes:
         fechas_unicas = fechas_unicas.iloc[-max_compras_recientes:]
+        #POR ESO EL RODEN ASENDEDENTE PARA PODER OBTENER LAS ULITMAS COMPRAS 
     
     gaps_dias_reales = np.diff(fechas_unicas).astype('timedelta64[D]').astype(int)
     gaps_dias_reales = gaps_dias_reales.tolist()
+
+
+
     
-    ciclo_dias = float(np.mean(gaps_dias_reales))
+    ciclo_dias = int(float(np.mean(gaps_dias_reales)))
+
+
+
+    
 
     if tipo == "corto":
         limite_inferior = 3
@@ -216,39 +276,65 @@ def calcular_ciclos(
         hacia_abajo = 0.2
         hacia_arriba = 0.3
     
+    #CAMBIO DE FRECUCIAS LARA LIMITE INFERIOR NO ACUMULATIVO
+    limite_inferior = 3
+    # Media correspondiente con el tipo del ciclo a analizar
+    if len(bloques_con_compra) < min_compras:
+        return {
+            "ciclo_dias": [0,ciclo_dias,0],
+            "cv": cv,
+            "tipo": 'no_ciclico',
+            "razon": f'min_compras {tipo}',
+            "gaps_originales": gaps_dias_reales,
+            "gaps_normalizados": gaps_dias_bloques_cv.tolist(),
+            "gaps_ciclos_bloques":gaps_dias_bloques.tolist()
+            }
 
     # Decidir si es cíclico
-    if cv <= cv_threshold:
+    if cv <= cv_threshold or clase_de_calculo == 0:
         # Ciclo promedio basado en gaps REALES
         
-        if ciclo_dias >= limite_inferior and ciclo_dias <= limite_superior:
+        if ciclo_dias > limite_inferior and ciclo_dias <= limite_superior:
+            # ES CÍCLICO: retornar con intervalos
             return {
             "ciclo_dias": [ciclo_dias*(1-cv_threshold*hacia_abajo),ciclo_dias,ciclo_dias*(1+cv_threshold*hacia_arriba)],
             "cv": cv,
-            "tipo": tipo,  # ← CORREGIDO: usar parámetro tipo
-            "gaps_originales": gaps_dias_reales,  # Días REALES
-            "gaps_normalizados": gaps_norm.tolist()
+            "tipo": tipo,
+            "razon": f"OK {tipo}",
+            "gaps_originales": gaps_dias_reales,
+            "gaps_normalizados": gaps_dias_bloques_cv.tolist(),
+            "gaps_ciclos_bloques":gaps_dias_bloques.tolist()
             }
+        # NO CÍCLICO (fuera de rango): retornar ciclo_dias calculados para DEBUG
         return {
-            "ciclo_dias": [0,0,0], 
+            "ciclo_dias": [0, ciclo_dias, 0], 
             "cv": cv, 
             "tipo": "no_ciclico", 
-            "gaps_originales": gaps_dias_reales,  # Días REALES
-            "gaps_normalizados": gaps_norm.tolist()
+            "razon": f"fuera_rango {tipo}",
+            "gaps_originales": gaps_dias_reales,
+            "gaps_normalizados": gaps_dias_bloques_cv.tolist(),
+            "gaps_ciclos_bloques":gaps_dias_bloques.tolist()
             }
     else:
-        return {"ciclo_dias": [0,0,0],
-        "cv": cv,
-        "tipo": "no_ciclico",
-        "gaps_originales": gaps_dias_reales,
-        "gaps_normalizados": gaps_norm.tolist()}
+        # NO CÍCLICO (cv alto): retornar ciclo_dias calculados para DEBUG
+        return {
+            "ciclo_dias": [0, ciclo_dias, 0],
+            "cv": cv,
+            "tipo": "no_ciclico",
+            "razon": f"cv_alto {tipo}",
+            "gaps_originales": gaps_dias_reales,
+            "gaps_normalizados": gaps_dias_bloques_cv.tolist(),
+            "gaps_ciclos_bloques":gaps_dias_bloques.tolist()
+        }
 
 
 
 def calcular_ciclos_por_bloques(
     df_ventas,
     familia_id,
-    today=pd.Timestamp.today()
+    today=pd.Timestamp.today(),
+    clase_de_calculo = 1
+
 ):
     """
     Orquestador: intenta primero ciclos cortos, luego largos.
@@ -286,10 +372,11 @@ def calcular_ciclos_por_bloques(
             subcat=subcat,
             today=today,
             cv_threshold=ciclo["cv_threshold"],
-            tipo=ciclo["tipo"]
+            tipo=ciclo["tipo"],
+            clase_de_calculo = clase_de_calculo
             )
         
-            if resultado["ciclo_dias"][1] > 0:
+            if resultado["ciclo_dias"][1] > 0 and resultado["tipo"] != "no_ciclico":
                 # Encontró ciclo
                 ciclo_encontrado = True
                 resultados.append({
@@ -298,8 +385,11 @@ def calcular_ciclos_por_bloques(
                 "ciclo_dias": resultado["ciclo_dias"],
                 "cv": resultado["cv"],
                 "tipo_ciclo": resultado["tipo"],
+                "razon": resultado.get("razon", "NO_ENCONTRADO"),
                 "gaps_originales_dias": resultado.get("gaps_originales", []),
-                "gaps_normalizados": resultado.get("gaps_normalizados", [])
+                "gaps_normalizados": resultado.get("gaps_normalizados", []),
+                "gaps_ciclos_bloques": resultado.get("gaps_ciclos_bloques", [])
+                
                 })
                 break
         
@@ -311,8 +401,10 @@ def calcular_ciclos_por_bloques(
                 "ciclo_dias": resultado["ciclo_dias"],
                 "cv": resultado["cv"],
                 "tipo_ciclo": resultado["tipo"],
+                "razon": resultado.get("razon", "NO_ENCONTRADO"),
                 "gaps_originales_dias": resultado.get("gaps_originales", []),
-                "gaps_normalizados": resultado.get("gaps_normalizados", [])
+                "gaps_normalizados": resultado.get("gaps_normalizados", []),
+                "gaps_ciclos_bloques": resultado.get("gaps_ciclos_bloques", [])
             })
       
     df_resultado = pd.DataFrame(resultados)
@@ -324,6 +416,16 @@ def calcular_ciclos_por_bloques(
         df_resultado = df_resultado.sort_values(["_ciclo_idx1", "cv"], ascending=[False, True]).reset_index(drop=True)
         df_resultado = df_resultado.drop(columns=['_ciclo_idx1'])
     
+    if clase_de_calculo == 0:
+        columnas_debug = ["COD_SUBCATEGORIA","tipo_ciclo"]
+        df_resultado = df_resultado[columnas_debug].copy()
+        #rename tipo_ciclo a tipo_ciclo_b
+        df_resultado.rename(columns={"tipo_ciclo": "tipo_ciclo_b"}, inplace=True)
+        #agregar columna ciclo_binario
+        df_resultado["ciclo_binario"] = df_resultado["tipo_ciclo_b"].apply(lambda x: 1 if x != "no_ciclico" else 0)
+    if clase_de_calculo == 1:
+        df_resultado["ciclo_binario_c"] = df_resultado["tipo_ciclo"].apply(lambda x: 1 if x != "no_ciclico" else 0)
+
     return df_resultado
     
 
@@ -337,7 +439,7 @@ def compute_recency_features(subcat_agg: pd.DataFrame,
         fecha_corte - subcat_agg["ultima_compra"]
     ).dt.days.clip(lower=0)
 
-    # pegar ciclo_dias
+    # pegar ciclo_dias y tipo_ciclo
     subcat_agg = subcat_agg.merge(ciclos_estacionales, on="COD_SUBCATEGORIA", how="left")
 
     # ---- Extraer [inferior, mu, superior] por fila (NO por índice global) ----
@@ -369,8 +471,10 @@ def compute_recency_features(subcat_agg: pd.DataFrame,
     dR_edge = x2 - mu
     dR_far  = rf - mu
 
-    # ---- Máscara de casos válidos ----
-    valid = (mu > 0) & (dL_edge > 0) & (dL_far > dL_edge) & (dR_edge > 0) & (dR_far > dR_edge)
+    # ---- Máscara de casos válidos: CICLOS y geometría correcta ----
+    # IMPORTANTE: Usar tipo_ciclo para filtrar no_ciclicos
+    is_ciclico = subcat_agg["tipo_ciclo"] != "no_ciclico"
+    valid = is_ciclico & (mu > 0) & (dL_edge > 0) & (dL_far > dL_edge) & (dR_edge > 0) & (dR_far > dR_edge)
 
     # ---- Calibración vectorizada de p y s por lado ----
     # Modelo: y = exp(-(d/s)^p)
@@ -463,10 +567,6 @@ def compute_frequency_features(df_family: pd.DataFrame, ciclos_estacionales: pd.
         ciclo_dias = row["ciclo_dias"]
         tipo_ciclo = row["tipo_ciclo"]  # Si falla, hay un error arriba
 
-        # Extraer CV y calcular CV invertido
-        cv_original = row["cv"]
-        cv_invertido = 0.0 if cv_original == 999.0 else (1.0 - min(cv_original, 1.0))
-        
         # No_ciclicos: poner valores en 0 (no hay frecuencia válida)
         if tipo_ciclo == "no_ciclico":
             resultados.append({
@@ -474,7 +574,7 @@ def compute_frequency_features(df_family: pd.DataFrame, ciclos_estacionales: pd.
                 "freq_baja": 0,
                 "freq_media": 0,
                 "freq_alta": 0,
-                "cv_invertido": cv_invertido,
+                "cv_invertido": 0.0,  # NO calcular para no_ciclico
                 "compras_reales": 0,
                 "periodo_revision": 0
             })
@@ -482,6 +582,10 @@ def compute_frequency_features(df_family: pd.DataFrame, ciclos_estacionales: pd.
         
         # Extraer [ciclo_inf, ciclo_mu, ciclo_sup] - siempre es lista de 3
         ciclo_inf, ciclo_mu, ciclo_sup = ciclo_dias
+        
+        # Calcular CV invertido para cíclicos
+        cv_original = row["cv"]
+        cv_invertido = 1.0 - min(cv_original, 1.0)
         
         # Determinar período de revisión según tipo - debe existir
         periodo_dias = periodos_revision[tipo_ciclo]  # Si falla, tipo_ciclo inválido
@@ -493,7 +597,7 @@ def compute_frequency_features(df_family: pd.DataFrame, ciclos_estacionales: pd.
             (df_family["DIM_PERIODO"] >= ventana_inicio)
         ].copy()
         
-        compras_reales = recientes["DIM_FACTURA"].count()
+        compras_reales = recientes["DIM_PERIODO"].unique().size
         
         # Calcular frecuencia para cada nivel
         freq_scores = []
@@ -801,7 +905,7 @@ def compute_seasonality_features(df_family: pd.DataFrame, ciclos_estacionales: p
         if compras_pasado > 0:
             ratio = compras_actual / compras_pasado
         else:
-            ratio = 0.0
+            ratio = 999
         
         # Función con meseta (plateau)
         # Meseta alta entre 0.8-1.2, decae fuera del rango
@@ -845,7 +949,7 @@ def compute_features_for_family(
     if fecha_corte is None:
         fecha_corte = CUTOFF_DATE
     
-    df_family = df_family[df_family["DIM_PERIODO"] < fecha_corte].copy()
+    df_family = df_family[df_family["DIM_PERIODO"] <= fecha_corte].copy()
     if df_family.empty:
         return pd.DataFrame()
 
@@ -870,12 +974,23 @@ def compute_features_for_family(
 
     subcat_agg = subcat_agg.sort_values("total_venta_neta", ascending=False).reset_index(drop=True)
     
-    # Calcular ciclos (ahora con sistema de 2 fases: cortos y largos)
+    # Calcular ciclos 
     ciclos_estacionales = calcular_ciclos_por_bloques(
         df_ventas=df_family,
         familia_id=family_code,
-        today=fecha_corte
+        today=fecha_corte,
+        clase_de_calculo =1
     )
+
+    # Calculo ciclos Debug
+    
+    ciclos_debug = calcular_ciclos_por_bloques(
+        df_ventas=df_family,
+        familia_id=family_code,
+        today=fecha_corte,
+        clase_de_calculo = 0
+    )
+    
     
     if ciclos_estacionales.empty:
         return pd.DataFrame()
@@ -912,6 +1027,7 @@ def compute_features_for_family(
     features_final = features_final.merge(seasonality_features, on="COD_SUBCATEGORIA", how="left")
 
     features_final = features_final.merge(ciclos_estacionales, on="COD_SUBCATEGORIA", how="left")
+    features_final  = features_final.merge(ciclos_debug, on="COD_SUBCATEGORIA",how="left")
     features_final = features_final.fillna(0.0)
 
     # Score final (legacy - ahora el modelo FNN usará las features directamente)
@@ -944,12 +1060,14 @@ def compute_features_for_family(
                 rename_map[col] = f"{prefix}_{col}"
     
     # Definir columnas por origen
-    columnas_ciclos = ["CODIGO_FAMILIA", "COD_SUBCATEGORIA", "ciclo_dias", "cv", "tipo_ciclo", "gaps_originales_dias", "gaps_normalizados"]
+    columnas_debug_ciclos = ['tipo_ciclo_b','ciclo_binario']
+    columnas_ciclos = ["CODIGO_FAMILIA", "COD_SUBCATEGORIA", "ciclo_dias", "cv", "tipo_ciclo","razon", "gaps_originales_dias", "gaps_normalizados","gaps_ciclos_bloques","ciclo_binario_c"]
     columnas_recencia = ["COD_SUBCATEGORIA", "recencia_hl", "castigo_recencia", "l_compra_sobre_ciclo", "dias_desde_ultima_compra", "recencia"]
     columnas_freq = ["COD_SUBCATEGORIA", "freq_baja", "freq_media", "freq_alta", "cv_invertido", "compras_reales", "periodo_revision"]
     columnas_sow = ["COD_SUBCATEGORIA", "sow_24m", "transacciones_netas"]
     columnas_seasonality = ["COD_SUBCATEGORIA", "season_ratio", "compras_actual", "compras_pasado", "ratio_temporal"]
 
+    add_renames(columnas_debug_ciclos, "Debug_ciclos")
     add_renames(columnas_ciclos, "Ciclos")
     add_renames(columnas_recencia, "Recencia")
     add_renames(columnas_freq, "Freq")
@@ -967,6 +1085,14 @@ def compute_features_for_family(
 
     features_final = features_final[final_cols]
     features_final["nucleo"] = family_code
+    
+    # Extraer valor medio del ciclo (optimizado con vectorización)
+    if 'Ciclos_ciclo_dias' in features_final.columns:
+        features_final['ciclo_dias_mu'] = features_final['Ciclos_ciclo_dias'].apply(
+            lambda x: float(x[1]) if isinstance(x, (list, np.ndarray)) and len(x) >= 2 else 0.0
+        )
+    else:
+        features_final['ciclo_dias_mu'] = 0.0
 
     return features_final
 
@@ -999,6 +1125,7 @@ def main() -> None:
     print("Cargando dataset histórico...")
     df_raw = load_historical_dataset(HISTORICAL_FILE)
     print(f"Registros totales: {len(df_raw)} | Núcleos únicos: {df_raw['CODIGO_FAMILIA'].nunique()}")
+
 
 
     features_all = process_all_families(df_raw)

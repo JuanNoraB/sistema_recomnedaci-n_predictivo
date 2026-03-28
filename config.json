@@ -1,0 +1,8 @@
+{
+    "Path": {
+        "Historico": "/home/juanchx/Documents/Trabajo/SYSTEM_RECOMENDATION_FNN/Data/Historico_08122025.csv",
+        "Test": "/home/juanchx/Documents/Trabajo/SYSTEM_RECOMENDATION_FNN/Data/data_test.csv",
+        "Result_FNN": "/home/juanchx/Documents/Trabajo/SYSTEM_RECOMENDATION_FNN/src/keras/predictions_fnn_final.csv",
+        "Pacom": "/home/juanchx/Documents/Trabajo/SYSTEM_RECOMENDATION_FNN/Data/PACOM_NOVIEMBRE.csv"
+    }
+}

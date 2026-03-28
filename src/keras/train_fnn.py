@@ -28,12 +28,13 @@ import argparse
 import os
 from contextlib import contextmanager
 import warnings
-
+#***************########################
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers, models, callbacks
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix, classification_report
 
 # Ignorar warnings específicos para una salida más limpia
 warnings.filterwarnings('ignore', category=pd.errors.SettingWithCopyWarning)
@@ -85,6 +86,11 @@ def compute_features_and_target(fecha_corte_str):
     print(f"   ✓ {len(df_historico)} registros")
     print(f"   ✓ Fechas: {df_historico['DIM_PERIODO'].min()} a {df_historico['DIM_PERIODO'].max()}")
     
+    #**********#############FILTRO DEBGUG PARA PERSONA Y CATEGORIA  ###########################
+    #familia = 1700122201
+    #subcategoria = 9352
+    #df_historico = df_historico[(df_historico['CODIGO_FAMILIA'] == familia) & (df_historico['COD_SUBCATEGORIA'] == subcategoria)]
+    #*********####################################################
     # 2. Dividir histórico
     fecha_corte_features = pd.Timestamp(fecha_corte_str)
     fecha_inicio_target = pd.Timestamp('2025-11-10')
@@ -158,12 +164,14 @@ def compute_features_and_target(fecha_corte_str):
     
     # NO filtrar no_ciclico - entrenar con TODOS los tipos de ciclo
     # Hipótesis: modelo aprenderá a usar sow para no_ciclico
-    df_antes = len(df_final)
-    target_antes = df_final['target'].sum()
     
-    # df_final = df_final[df_final['Ciclos_tipo_ciclo'] != 'no_ciclico'].copy()  # COMENTADO
+    # ============================================================================
+    # FILTRO OPCIONAL: Descomentar para entrenar SOLO con un tipo de ciclo
+    # ============================================================================
+    # df_final = df_final[df_final['Ciclos_tipo_ciclo'] == 'corto_medio'].copy()
+    # ============================================================================
     
-    print(f"\n🎯 Dataset de entrenamiento (INCLUYE no_ciclico):")
+    print(f"\n🎯 Dataset de entrenamiento (TODOS los tipos de ciclo):")
     print(f"   Total: {len(df_final)} registros")
     print(f"   Target=1: {df_final['target'].sum()} ({df_final['target'].mean()*100:.1f}%)")
     
@@ -174,20 +182,22 @@ def compute_features_and_target(fecha_corte_str):
             df_tipo = df_final[df_final['Ciclos_tipo_ciclo'] == tipo]
             print(f"      {tipo:12s}: {len(df_tipo):5d} ({len(df_tipo)/len(df_final)*100:4.1f}%) - Target=1: {df_tipo['target'].sum()} ({df_tipo['target'].mean()*100:.1f}%)")
     
+
+
     return df_final
 
 
-def create_model():
+def create_model(input_dim):
     """
     
     Arquitectura:
-    - Input: 4 features (recencia, freq, sow, season)
+    - Input: input_dim features (dinámico según one-hot encoding)
     - Hidden 1: 64 neuronas + ReLU + Dropout(0.3)
     - Hidden 2: 32 neuronas + ReLU + Dropout(0.2)
     - Output: 1 neurona + Sigmoid (probabilidad 0-1)
     """
     model = models.Sequential([
-        layers.Input(shape=(7,)),
+        layers.Input(shape=(input_dim,)),
         layers.Dense(64, activation='relu', name='hidden1'),
         layers.Dropout(0.3),
         layers.Dense(32, activation='relu', name='hidden2'),
@@ -195,16 +205,82 @@ def create_model():
         layers.Dense(1, activation='sigmoid', name='output')
     ])
     
+    # Métricas adicionales para clasificación binaria
+    metrics_list = [
+        'accuracy',
+        keras.metrics.Precision(name='precision'),
+        keras.metrics.Recall(name='recall'),
+        keras.metrics.AUC(name='auc')
+    ]
+    
+    # ============================================================================
+    # MÉTRICA PRINCIPAL: Descomentar para usar F1-Score en lugar de accuracy
+    # ============================================================================
+    # from tensorflow.keras.metrics import F1Score
+    # metrics_list = [
+    #     F1Score(name='f1_score', threshold=0.5),
+    #     keras.metrics.Precision(name='precision'),
+    #     keras.metrics.Recall(name='recall'),
+    #     keras.metrics.AUC(name='auc')
+    # ]
+    # ============================================================================
+    
     model.compile(
         optimizer=keras.optimizers.Adam(learning_rate=0.001),
         loss='binary_crossentropy',
-        metrics=['accuracy']
+        metrics=metrics_list
     )
     
     return model
 
 
-def evaluate_top_k(model, test_df, feature_cols, scaler, k=3):
+def print_classification_metrics(y_true, y_pred, y_pred_proba, dataset_name="Test"):
+    """
+    Imprime métricas de clasificación y Confusion Matrix
+    
+    Args:
+        y_true: Labels reales
+        y_pred: Predicciones binarias (0 o 1)
+        y_pred_proba: Probabilidades predichas
+        dataset_name: Nombre del dataset (Train/Test)
+    """
+    print(f"\n{'='*80}")
+    print(f"📊 MÉTRICAS DE CLASIFICACIÓN - {dataset_name.upper()}")
+    print(f"{'='*80}")
+    
+    # Confusion Matrix
+    cm = confusion_matrix(y_true, y_pred)
+    tn, fp, fn, tp = cm.ravel()
+    
+    print(f"\n📋 Confusion Matrix:")
+    print(f"              Predicho")
+    print(f"              0       1")
+    print(f"   Real  0  {tn:6d}  {fp:6d}  (TN={tn}, FP={fp})")
+    print(f"         1  {fn:6d}  {tp:6d}  (FN={fn}, TP={tp})")
+    
+    # Métricas por clase
+    print(f"\n📈 Métricas por Clase:")
+    print(classification_report(y_true, y_pred, target_names=['No Compra (0)', 'Compra (1)'], digits=4))
+    
+    # Métricas adicionales
+    total = len(y_true)
+    accuracy = (tp + tn) / total
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+    f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+    
+    print(f"\n📊 Resumen:")
+    print(f"   Total muestras: {total}")
+    print(f"   Accuracy: {accuracy:.4f} ({accuracy*100:.1f}%)")
+    print(f"   Precision (clase 1): {precision:.4f} ({precision*100:.1f}%)")
+    print(f"   Recall (clase 1): {recall:.4f} ({recall*100:.1f}%)")
+    print(f"   F1-Score (clase 1): {f1:.4f}")
+    print(f"   Tasa de positivos real: {y_true.mean():.4f} ({y_true.mean()*100:.1f}%)")
+    print(f"   Tasa de positivos predicha: {y_pred.mean():.4f} ({y_pred.mean()*100:.1f}%)")
+    print("="*80)
+
+
+def evaluate_top_k(model, test_df, base_feature_cols, feature_columns, scaler, k=3):
     """
     Evalúa TOP-K por familia
     
@@ -213,6 +289,9 @@ def evaluate_top_k(model, test_df, feature_cols, scaler, k=3):
     2. Ordena por probabilidad
     3. Toma TOP-K
     4. Compara con compras reales (target=1)
+    
+    Args:
+        feature_columns: Lista de columnas esperadas (para alinear one-hot encoding)
     """
     print(f"\n📊 Evaluando TOP-{k} en test set...")
     
@@ -227,8 +306,15 @@ def evaluate_top_k(model, test_df, feature_cols, scaler, k=3):
         if len(df_fam) < k:
             continue
         
-        # Preparar features
-        X = np.nan_to_num(df_fam[feature_cols].values, nan=0.0)
+        # Preparar features (igual que en main)
+        tipo_ciclo_dummies = pd.get_dummies(df_fam['Debug_ciclos_tipo_ciclo_b'], prefix='tipo', drop_first=True)
+        X_base = df_fam[base_feature_cols]
+        X_all = pd.concat([X_base.reset_index(drop=True), tipo_ciclo_dummies.reset_index(drop=True)], axis=1)
+        
+        # Alinear columnas: agregar columnas faltantes con 0 y eliminar extras
+        X_all = X_all.reindex(columns=feature_columns, fill_value=0)
+        
+        X = np.nan_to_num(X_all.values, nan=0.0)
         X_scaled = scaler.transform(X)
         
         # Predecir
@@ -404,16 +490,45 @@ def main():
     
     # 1. Calcular features y target (silenciando la salida de prints y warnings)
     print("\n⏳  Calculando features y target (esto puede tardar)...")
-    with suppress_stdout():
-        df = compute_features_and_target(fecha_corte)
+    # TEMPORAL: Comentado para ver errores
+    # with suppress_stdout():
+    df = compute_features_and_target(fecha_corte)
+    ##*******###########################################VALIDACION DEBUGGER ###########################################
+    #print(df)
+    #df.to_csv("/home/juanchx/Documents/Trabajo/SYSTEM_RECOMENDATION_FNN/src/keras/df_debug.csv", index=False)
+    #return df
+    ##********###########################################VALIDACION DEBUGGER ###########################################
     print("   ✓ Dataset final generado.")
     
     # 2. Split (si es validación)
-    # 7 features: recencia + 3 frecuencias + cv_invertido + SOW + seasonalidad
-    feature_cols = ['recencia_hl', 'freq_baja', 'freq_media', 'freq_alta', 'cv_invertido', 'sow_24m', 'season_ratio']
+    # 8 features base + 4 one-hot (tipo_ciclo) = 12 features
+    base_feature_cols = [
+        'recencia_hl', 
+        'freq_baja', 
+        'freq_media', 
+        'freq_alta', 
+        'cv_invertido', 
+        'sow_24m', 
+        'season_ratio',
+        'ciclo_dias_mu',
+        'Ciclos_ciclo_binario_c'
+    ]
     
-    X = np.nan_to_num(df[feature_cols].values, nan=0.0)
+    # One-hot encoding de tipo_ciclo_b (excluir primera categoría para evitar multicolinealidad)
+    tipo_ciclo_dummies = pd.get_dummies(df['Debug_ciclos_tipo_ciclo_b'], prefix='tipo', drop_first=True)
+    
+    # Concatenar features base + one-hot
+    X_base = df[base_feature_cols]
+    X_all = pd.concat([X_base.reset_index(drop=True), tipo_ciclo_dummies.reset_index(drop=True)], axis=1)
+    
+    # Guardar columnas finales para usar en evaluate_top_k
+    feature_columns = list(X_all.columns)
+    
+    X = np.nan_to_num(X_all.values, nan=0.0)
     y = df['target'].values
+    
+    print(f"   ✓ Features finales: {X.shape[1]} columnas")
+    print(f"   ✓ Columnas: {feature_columns}")
     
     if with_validation:
         print(f"\n🔀 Split 80/20 (validación)...")
@@ -442,7 +557,9 @@ def main():
     
     # 4. Crear modelo
     print(f"\n🧠 Creando modelo...")
-    model = create_model()
+    input_dim = X_train.shape[1]
+    print(f"   ✓ Input dim: {input_dim} features")
+    model = create_model(input_dim)
     model.summary()
     
     # 5. Callbacks
@@ -512,9 +629,23 @@ def main():
         else:
             print("⚠️  Revisar (posible overfitting)")
     
+    # 7b. Métricas de clasificación (Confusion Matrix, Precision, Recall, F1)
+    print(f"\n🔍 Calculando métricas de clasificación...")
+    
+    # Train set
+    y_train_pred_proba = model.predict(X_train_scaled, verbose=0).flatten()
+    y_train_pred = (y_train_pred_proba > 0.5).astype(int)
+    print_classification_metrics(y_train, y_train_pred, y_train_pred_proba, dataset_name="Train")
+    
+    # Test set (si hay validación)
+    if with_validation:
+        y_test_pred_proba = model.predict(X_test_scaled, verbose=0).flatten()
+        y_test_pred = (y_test_pred_proba > 0.5).astype(int)
+        print_classification_metrics(y_test, y_test_pred, y_test_pred_proba, dataset_name="Validation")
+    
     # 8. Evaluar TOP-K (solo si validación)
     if with_validation:
-        results = evaluate_top_k(model, test_df, feature_cols, scaler, k=3)
+        results = evaluate_top_k(model, test_df, base_feature_cols, feature_columns, scaler, k=3)
     
     # 9. Guardar
     print(f"\n💾 Guardando modelo...")
